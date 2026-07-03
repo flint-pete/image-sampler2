@@ -22,8 +22,23 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   (not time_ns()) and reusing one second across multiple artifacts — a
   plugin-level provenance issue outside image-sampler2/pywaggle. Flagged as an
   upstream action item (raise with file-forager author / Sage data conventions).
+- Analysis Section 11: camera-metadata vendor-interface study + live evidence.
+  Marker-scanned three real frames: Reolink snapshot (no metadata; camera authors
+  none), Mobotix via mobotix-scan (stripped — libav re-encode, only a Lavc tag),
+  and Mobotix via imagesampler-mobotix (FULL M1IMG fingerprint + MXF block
+  preserved). Documents Reolink/Hanwha/Mobotix acquisition interfaces and decodes
+  the Mobotix fingerprint (manufacturer, ms capture time+TZ, per-sensor geometry/
+  exposure telemetry).
 
 ### Changed
+- Design mandate (acquisition/metadata): where possible, acquire the ORIGINAL
+  ENCODED image from the camera's native still endpoint and save raw JPEG bytes
+  UNTOUCHED so high-quality-camera metadata (e.g. Mobotix M1IMG, Hanwha EXIF) is
+  preserved; INJECT our Sage fields as an added EXIF/COM segment without
+  re-encoding. OpenCV/RTSP (pixel decode + re-encode) demoted to a fallback for
+  stream-only cameras and clearly labeled as re-encoded. Native-still HTTP fetch
+  becomes a first-class acquisition source. Prefer camera-side capture time
+  (Mobotix TIM/TZN/TIT) when present, else node grab-time.
 - Design decision (linking/uniqueness): object name = `<ns>-<camera>.jpg`
   (per-stream, not constant `sample.jpg`); embed immutable provenance as EXIF
   (vsn, camera, capture_ts, plugin+version, per-capture unique id); mirror vsn +

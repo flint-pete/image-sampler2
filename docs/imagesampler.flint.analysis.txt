@@ -633,3 +633,122 @@ WHY THIS MATTERS FOR image-sampler2:
 - ACTION ITEM (separate from our plugin): raise the coarse/duplicated-timestamp
   behavior with the file-forager author and/or the Sage data-conventions owners,
   referencing (A) and (B). Not blocking image-sampler2.
+
+
+───────────────────────────────
+11. CAMERA METADATA: VENDOR INTERFACES + EVIDENCE + THE "DON'T RE-ENCODE" MANDATE
+───────────────────────────────
+Question posed: does camera-authored JPEG metadata (make, focus, exposure,
+capture time, etc.) exist and is it worth preserving? Answer, from live evidence:
+IT DEPENDS ENTIRELY ON (a) the camera vendor and (b) the acquisition path. High-
+quality cameras (e.g. Mobotix) embed a rich metadata block; whether it survives
+to the object store is decided by whether the plugin RE-ENCODES the frame.
+
+11.1  VENDOR ACQUISITION INTERFACES (they differ — do not generalize)
+--------------------------------------------------------------------
+- REOLINK (RLC-811A, the H00F hummingcam):
+    proprietary JSON API  cgi-bin/api.cgi?cmd=Snap   (or RTSP).
+- HANWHA / WISENET:
+    SUNAPI CGI still endpoint  /stw-cgi/video.cgi?msubmenu=snapshot&action=view
+    (distinct from RTSP); full ONVIF Profile S/T/G. Professional line — snapshots
+    commonly carry EXIF (make/model/datetime) and OSD/metadata. NOT yet tested
+    on a Sage unit.
+- MOBOTIX (M16, ToDo #3):
+    multiple native still endpoints:
+      /record/current.jpg          (current image per saved settings)
+      /cgi-bin/image.jpg?...       (parameterized still)
+      /control/event.jpg?sequence=head   (last event image)
+      /cgi-bin/faststream.jpg      (MJPEG / MxPEG live stream)
+    MxPEG is Mobotix's own format carrying audio + event/metadata alongside
+    frames; the native JPEGs embed a Mobotix fingerprint block (see 11.3).
+
+11.2  EVIDENCE — THREE LIVE TESTS (marker-scanned raw bytes)
+-----------------------------------------------------------
+  SOURCE                     PLUGIN / PATH                     CAMERA METADATA
+  Reolink H00F snapshot      cmd=Snap (camera authors none)    NONE (bare JPEG:
+                             direct HTTP still                  DQT/SOF/DHT/scan
+                                                                only; no EXIF/JFIF)
+  Mobotix W08D (node e277)   mobotix-scan:0.24.8.16            STRIPPED — only a
+                             libav/FFmpeg decode->re-encode     "Lavc58.54.100"
+                                                                comment (FFmpeg's
+                                                                encoder tag)
+  Mobotix W08D (node e335)   imagesampler-mobotix:0.3.7        FULL Mobotix
+                             raw native JPEG, NOT re-encoded    M1IMG fingerprint
+                                                                + MXF binary block
+
+KEY OBSERVATION: the two Mobotix rows are the SAME camera model. The ONLY
+difference is the plugin's acquisition path. The re-encoding plugin (OpenCV/
+libav) destroyed the metadata and stamped its own Lavc tag; the raw-bytes plugin
+preserved the complete camera fingerprint. This is the whole design lesson in one
+comparison.
+
+11.3  WHAT MOBOTIX ACTUALLY EMBEDS (decoded from the preserved frame)
+--------------------------------------------------------------------
+The imagesampler-mobotix frame carried a 2001-byte COM "#:M1IMG" fingerprint
+plus a 301-byte binary "MXF" block. Decoded text (abridged):
+    PRD=MOBOTIX                 manufacturer
+    FRM=7290841                 frame number
+    DAT=2026-07-03              camera-authored capture DATE
+    TIM=21:00:08.323            camera capture TIME (millisecond precision)
+    TZN=GMT  TIT=1783112408.323 timezone + epoch capture time
+    TIU=323875                  microsecond field
+    CTY=DUAL  ICC=MxPEG         dual-sensor; codec
+    XTO=6144 YTO=2048  QLT=60   dimensions + JPEG quality
+    CAM=BOTH  CAS=BOTH          both lenses active
+    WIN=lt=0,0:rb=3071,2047:cam=1:...   per-sensor window geometry
+    WIN=lt=3072,0:rb=6143,2047:cam=0:...
+    SNR=6307182,9021387         per-sensor serial/frame counters
+    ZOM=1000,1000  PAX/PAY      zoom / pan
+    ACT=OFF,AUTO  BRT/BLT/CSA/NOI  per-sensor exposure/brightness/noise telemetry
+    (+ MXF binary: sensor calibration / exposure telemetry)
+This is RICHER than typical EXIF, and notably includes a TRUE CAMERA-SIDE capture
+time (TIM/TZN/TIT) — better than the node grab-time we settled for in Section 8.
+For Mobotix, preserving this block gives authoritative capture time for free.
+
+11.4  WHY OpenCV/libav WAS BEING USED (and why it's wrong for this)
+------------------------------------------------------------------
+- Generic imagesampler uses pywaggle Camera() -> OpenCV VideoCapture -> libav.
+  Chosen for VENDOR-NEUTRALITY (one path for any RTSP/HTTP URL). Cost: it always
+  decodes to a numpy pixel array and re-encodes on save -> camera metadata never
+  survives, for ANY vendor.
+- mobotix-scan likewise goes through libav (proven by its Lavc comment), probably
+  because a decoded frame is the uniform way to get pixels for its PTZ/thermal
+  processing.
+- In both cases OpenCV/libav was a convenience/uniformity choice; metadata loss
+  is an unintended SIDE EFFECT. That is the gap image-sampler2 closes.
+
+11.5  DESIGN MANDATE: PREFER ORIGINAL ENCODED BYTES; NEVER RE-ENCODE ON PRESERVE
+-------------------------------------------------------------------------------
+Decision (Pete, 2026-07-03): where possible, acquire the ORIGINAL ENCODED IMAGE
+so metadata from high-quality cameras is included in the saved image.
+
+  1. PRIMARY PATH — raw native still. Fetch the camera's native still endpoint
+     (Reolink cmd=Snap, Hanwha stw-cgi snapshot, Mobotix image.jpg/current.jpg)
+     and save the RAW JPEG BYTES UNTOUCHED. No decode, no re-encode. This
+     preserves whatever the camera authored (Mobotix M1IMG, Hanwha EXIF, etc.).
+  2. INJECT, DON'T REBUILD. Add our Sage fields (vsn, node, job/task,
+     plugin+version, capture/grab timestamp, upload timestamp, per-capture uid,
+     lat/lon) by INSERTING an EXIF/COM segment into the existing JPEG byte stream,
+     leaving the camera's own segments intact. Never round-trip through a pixel
+     decode.
+  3. FALLBACK PATH — OpenCV/RTSP only when a native still is unavailable (stream-
+     only source, or a camera with no still endpoint). Accept that this path
+     yields pixels-only (no camera metadata) and re-encodes; we still add our own
+     fields. Clearly label images from this path as re-encoded.
+  4. PRESERVE-IF-PRESENT is NOT a no-op: Mobotix -> full fingerprint; Hanwha ->
+     likely EXIF; Reolink -> nothing (harmless no-op). One defensive code path
+     serves the whole fleet.
+  5. CAPTURE TIME: if the preserved camera block carries a true capture time
+     (Mobotix TIM/TZN/TIT), prefer it as capture_timestamp; else fall back to the
+     node grab-time (Section 8). Always also record upload_timestamp (Section 7).
+
+CONSEQUENCE FOR THE PLUGIN ARCHITECTURE: the native-still HTTP fetch (raw bytes)
+becomes a FIRST-CLASS acquisition source in image-sampler2, not an afterthought;
+pywaggle Camera()/OpenCV is demoted to the fallback for stream-only cameras.
+
+OPEN ITEMS:
+  - Verify a Hanwha native snapshot on the fleet actually carries EXIF (marker-
+    scan a raw pull), to confirm the Hanwha row above.
+  - Confirm the exact Reolink/Hanwha native still URLs + auth we will use in the
+    plugin (Reolink cmd=Snap confirmed working with admin creds on H00F).
+
