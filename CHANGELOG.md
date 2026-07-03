@@ -13,7 +13,20 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
-_Nothing yet — awaiting the first design change or code improvement._
+### Added
+- Analysis Section 9: what a downloaded JPG reveals (cv2.imwrite embeds no EXIF),
+  the object-store URL structure, the verified filename->event-log reverse-lookup
+  recipe, and the ns-as-key uniqueness problem.
+
+### Changed
+- Design decision (linking/uniqueness): object name = `<ns>-<camera>.jpg`
+  (per-stream, not constant `sample.jpg`); embed immutable provenance as EXIF
+  (vsn, camera, capture_ts, plugin+version, per-capture unique id); mirror vsn +
+  both timestamps + unique id into the upload record meta for a
+  construction-guaranteed 1:1 key. Empirically, `(vsn, ns)` is NOT unique (760
+  same-node + 695 cross-node ns collisions in 24h of fleet data, incl.
+  coarse/whole-second clocks); `(vsn, ns, filename)` is unique in practice but
+  not by construction — hence the per-capture unique id.
 
 ## [0.3.8-baseline] - 2026-07-03
 

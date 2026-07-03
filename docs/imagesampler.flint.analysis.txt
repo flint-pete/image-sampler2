@@ -419,3 +419,155 @@ BATCH-AND-HOLD PERFORMANCE NOTE:
 
 
 
+───────────────────────────────
+9. WHAT A DOWNLOADED JPG TELLS YOU + LINKING BACK TO THE EVENT LOG
+───────────────────────────────
+
+9.1  WHAT YOU CAN LEARN FROM JUST THE JPG
+-----------------------------------------
+Short answer: very little from the file itself. Almost all provenance lives in
+the event log; the filename is the only bridge back to it.
+
+(a) From the JPEG BYTES alone — essentially nothing useful.
+    imagesampler saves via ImageSample.save() -> cv2.imwrite() (pywaggle
+    vision.py). OpenCV writes ONLY raw pixel data: NO EXIF, NO XMP, NO comment
+    segment, NO timestamp / camera / GPS / make / model / exposure. Verified.
+    Recoverable from the bytes: image dimensions + channels (JPEG SOF header)
+    and a generic JFIF header. That's it. Zero embedded application metadata.
+
+(b) From the FILENAME — one thing, but critical.
+    1783082577307441180-upload.jpeg
+      prefix 1783082577307441180 = nanosecond-epoch RECORD timestamp
+             (/1e9 -> 2026-07-03 12:42:57 UTC). Same value as the event record's
+             timestamp (see Section 6). This is the ONLY provenance the object
+             itself carries. The suffix is just the plugin's base filename.
+
+(c) From the full OBJECT-STORE URL (if you kept the URL, not just the file) —
+    a lot. The storage path is structured/self-describing:
+      https://storage.sagecontinuum.org/api/v1/data/<JOB>/<PLUGIN-VERSION>/<NODE_ID>/<TIMESTAMP>-<FILENAME>
+    Live example:
+      .../edgerunner-demo-51cb7fd5-5675/sage-edgerunner-demo-51cb7fd5-0.6.2/00004cbb4701d16c/1783082577307441180-upload.jpeg
+    So the URL path encodes job, plugin+version, node id, timestamp, filename.
+    BUT: if you only have the bare file on disk (e.g. 1783105211072377356-
+    sample.jpg) with no path, that context is GONE — you have only the timestamp.
+
+9.2  WHERE THE REAL METADATA IS: THE upload EVENT RECORD
+-------------------------------------------------------
+Every uploaded image has a companion name="upload" record in the data/event log.
+Live H00F example (full field set):
+  {
+    "timestamp": "2026-07-03T12:42:57.30744118Z",
+    "name": "upload",
+    "value": "https://storage.sagecontinuum.org/.../1783082577307441180-upload.jpeg",
+    "meta": {
+      "filename": "upload.jpeg",
+      "vsn":     "H00F",                 <- node name
+      "node":    "00004cbb4701d16c",     <- node hardware id (matches URL path)
+      "host":    "00004cbb4701d16c.agx-thor",
+      "job":     "edgerunner-demo-51cb7fd5-5675",
+      "task":    "edgerunner-demo-51cb7fd5",
+      "plugin":  "registry.sagecontinuum.org/.../...:0.6.2",   <- plugin+VERSION
+      "zone":    "core"
+      // + any plugin-supplied keys
+    }
+  }
+Observed plugin-supplied custom keys across the fleet's upload records include:
+  camera, common_name, confidence, detections, top_class, top_species.
+(Per Section 7: vsn/node/host/job/task/plugin/zone are injected SERVER-SIDE;
+only filename + plugin-passed keys come from the plugin. Our two-timestamp
+capture_timestamp / upload_timestamp would be added here as plugin keys.)
+
+9.3  HOW TO FIND THE EVENT RECORD FROM JUST THE FILENAME (verified recipe)
+-------------------------------------------------------------------------
+The filename timestamp prefix IS the record's timestamp, so:
+  1. Split the filename on the first '-':  1783082577307441180 + upload.jpeg
+  2. Convert prefix ns -> UTC:  1783082577307441180/1e9 = 2026-07-03T12:42:57.307Z
+  3. Query the data API for name="upload" in a tight window (+-2 s absorbs slack):
+       POST https://data.sagecontinuum.org/api/v1/query
+       {"start":"2026-07-03T12:42:55Z","end":"2026-07-03T12:42:59Z",
+        "filter":{"name":"upload"}}     # add "vsn":"H00F" if known
+  4. Match exactly on the record whose value ENDSWITH your object name.
+Live test: the +-2 s window returned exactly one matching upload record and
+yielded the full meta. Caveat: if you have only a base filename with NO
+timestamp prefix (renamed file), the bridge is broken.
+
+9.4  THE UNIQUENESS PROBLEM WITH ns-AS-KEY  (Pete's concern — CONFIRMED IN PROD)
+-------------------------------------------------------------------------------
+CONCERN: a nanosecond timestamp alone is NOT a unique key for linking a
+downloaded file back to its event-log record. Empirically verified against 24h
+of FLEET-WIDE upload records (20,375 records, 58 nodes):
+
+  - SAME-NODE ns collisions: 760 (a node emits multiple uploads stamped with the
+    identical nanosecond). This is REAL and happening in production now.
+  - Root causes observed:
+      (i) One plugin cycle uploads MULTIPLE artifacts in a batch and passes the
+          SAME timestamp= to every upload_file() call, so all share one ns.
+          e.g. bhupendraraut/mobotix-scan uploaded 6 objects at one ns:
+          a 6144x2048 jpg + thermal plot jpg + .csv + .nc + .csv + .raw.
+      (ii) COARSE CLOCKS: some nodes stamp with whole-second (or coarser) ns
+          (trailing zeros). Of 20,375 records, ~2,800 had >=1 trailing zero;
+          one had 10 trailing zeros (whole-second resolution). On such nodes,
+          time_ns() effectively rounds -> collisions are far more likely, and
+          the "nanosecond guarantees uniqueness" assumption FAILS outright.
+      (iii) file-forager-style plugins that stamp by the SOURCE file's time,
+          not capture time, so two derived artifacts share a stamp.
+  - CROSS-NODE ns collisions: 695 ns values shared by >1 record across nodes.
+    Different nodes independently land on the same ns (esp. coarse-clock/whole-
+    second nodes). Different URL path per node, but ns alone is ambiguous.
+
+WHY THE URL PATH SAVES THE SERVER BUT NOT THE FILE:
+  In the object store, uniqueness is really provided by the FULL PATH
+  (job/plugin-version/node/ns-filename), not the ns. Two same-ns uploads live at
+  different paths (different filename and/or plugin dir). So the store is fine.
+  The problem is purely for a DOWNLOADED bare file that has lost its path.
+
+DOES Pete's FIX (put VSN in the filename or EXIF) WORK? Mostly yes — with caveats.
+Tested candidate keys against the 24h fleet data:
+  - (vsn, ns) alone            -> 760 collisions   (NOT unique)
+  - (vsn, ns, filename)        -> 0 collisions     (UNIQUE across 20,375 recs)
+  - (vsn, full-object-name)    -> 0 collisions     (UNIQUE; object-name = ns-filename)
+  - (vsn, object-name) spanning different plugins -> 0 (never happens)
+
+So: VSN + the FULL OBJECT NAME (ns + filename) is empirically a unique key over
+the whole fleet for 24h. VSN + ns WITHOUT the filename is NOT (batch uploads
+sharing one ns but differing only by filename collide). Conclusion:
+
+  * Adding VSN is necessary to disambiguate CROSS-node same-ns collisions.
+  * The FILENAME (the part after the ns) is necessary to disambiguate SAME-node,
+    same-ns batch uploads.
+  * imagesampler today uses a CONSTANT filename ("sample.jpg") for every stream,
+    so for a multi-stream, batch, or same-second capture, imagesampler ITSELF
+    could produce same-(vsn, ns, filename) collisions — the one case the fleet
+    data shows at 0 only because most plugins vary their filenames. This is the
+    same defect as the multi-stream sample.jpg race (Section 4) viewed from the
+    linking angle.
+
+REMAINING THEORETICAL HOLE even with (vsn, ns, filename):
+  It is unique in practice but NOT GUARANTEED by construction. Two captures on
+  one node, same coarse-clock ns, same stream name, same constant filename would
+  still collide. A construction-guaranteed unique key needs one of:
+    (a) a monotonic per-process SEQUENCE counter in the filename, or
+    (b) the content SHA (pywaggle's on-node staging already computes a sha1sum
+        for the upload dir name, see uploader.py Section 6 — but that sha is NOT
+        currently surfaced into the object name or the upload record meta), or
+    (c) a UUID minted per capture.
+
+RECOMMENDED DESIGN FOR image-sampler2 (linking + uniqueness):
+  1. Make the object name self-identifying: filename = per-stream camera name
+     (kills the constant-sample.jpg collision) so object name = ns-<camera>.jpg.
+  2. Embed provenance IN the JPEG (EXIF/XMP or a JPEG comment) so a downloaded
+     file is self-describing without an event-log round-trip. Minimum useful set:
+       vsn, node, camera, capture_timestamp, upload_timestamp, plugin+version,
+       and a per-capture unique id (seq or uuid or content-sha).
+  3. Also put vsn (redundant with server meta) + capture/upload timestamps +
+     the unique id into the upload record META, so the event-log side has a
+     construction-guaranteed 1:1 key, not just an empirically-unique one.
+  4. Document the filename -> event-log recipe (9.3) for legacy/plain files.
+  Tension to note: embedding EXIF duplicates data that can drift from the event
+  log (Sage convention is "metadata is the query surface"). Middle path: embed
+  only IMMUTABLE capture facts as EXIF (vsn, camera, capture ts, plugin+ver,
+  unique id); keep mutable/derived fields in the event log only.
+
+
+
+
