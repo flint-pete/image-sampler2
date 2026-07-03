@@ -570,4 +570,66 @@ RECOMMENDED DESIGN FOR image-sampler2 (linking + uniqueness):
 
 
 
+───────────────────────────────
+10. COARSE-CLOCK / COARSE-TIMESTAMP FINDING  (upstream stack issue, not ours)
+───────────────────────────────
+Flagged during the Section 9.4 uniqueness analysis: some upload timestamps have
+far coarser than nanosecond resolution, which is what makes ns collisions
+possible. This is an issue ELSEWHERE in the software stack (not image-sampler2,
+not pywaggle core) and is documented here so it can be raised with the right
+owner. Deliberately kept separate from our plugin's design.
 
+METHOD: 24h of fleet-wide name="upload" records (20,375 records, 58 nodes).
+For each record, counted trailing zeros of the ns timestamp in the object name
+(0 = full nanosecond resolution; 9-10 = whole-second resolution).
+
+FINDINGS:
+- Most nodes are healthy (max 3 trailing zeros ~ sub-microsecond jitter, normal).
+- ONE node stood out — W096 — with timestamps having 9-10 trailing zeros, i.e.
+  EXACT whole seconds (verified: ns % 1_000_000_000 == 0). Examples:
+      1783026338000000000, 1783037180000000000, 1783035340000000000
+
+ROOT CAUSE (diagnosed, NOT a node clock fault):
+- W096's node clock is FINE. On the SAME node in the SAME window, imagesampler
+  (0.3.5), waggle-wxt536, waggle-aqt530, cloud-motion, and audio-sampler all
+  emit FULL-resolution nanosecond stamps (842 full-res records). So time_ns() on
+  W096 works correctly.
+- The whole-second stamps come from exactly ONE plugin: file-forager
+  (bhupendraraut/file-forager:0.25.5.13), 15/15 of its uploads at whole seconds.
+- file-forager uploads pre-existing files (e.g. flux .ghg/.zip) and stamps each
+  upload with the SOURCE FILE's timestamp — which is second-resolution (from the
+  filename/mtime, e.g. 2026-07-02T153000...), NOT time_ns(). It also passes that
+  same second to MULTIPLE artifacts per cycle (the .ghg and .zip pair), which is
+  why W096 shows same-(vsn,ns) collisions.
+
+CLASSIFICATION: this is a PLUGIN-LEVEL provenance choice (stamp = source-file
+second), not a node OS/NTP clock defect. But it lives OUTSIDE image-sampler2 and
+pywaggle core, so it belongs to the file-forager author / the Sage data
+conventions. Two distinct concerns to raise upstream:
+
+  (A) Uniqueness/collision: any plugin that (i) stamps at coarse resolution and/or
+      (ii) reuses one timestamp across multiple artifacts in a cycle can produce
+      same-(vsn, ns) — and, if filenames also coincide, same-(vsn, ns, filename)
+      — collisions. The object store survives on full-path uniqueness, but any
+      consumer keying on (vsn, ns) to link a downloaded file back to its record
+      will mis-match. RECOMMENDATION to the ecosystem: uploads that legitimately
+      share a cycle timestamp should still be disambiguated by a per-artifact
+      unique token (sequence / uuid / content-sha) so (vsn, ns, token) is unique
+      by construction. (See Section 9.4 for the same recommendation applied to
+      our plugin.)
+
+  (B) Semantic clarity: a whole-second stamp derived from a source file's mtime
+      is a legitimate "when the source data is for" time, but it is easily
+      mistaken for a capture/upload time. This is another argument for the
+      two-timestamp convention (Section 7): carry the meaning explicitly
+      (source_timestamp vs capture_timestamp vs upload_timestamp) instead of
+      overloading the single record timestamp.
+
+WHY THIS MATTERS FOR image-sampler2:
+- Our plugin uses time_ns() via pywaggle and is NOT the offender. But because we
+  can't assume every producer in the ecosystem has fine-resolution, unique
+  timestamps, our LINKING design must not depend on ns uniqueness. It doesn't —
+  Section 9.4 already mandates vsn + per-stream filename + a per-capture unique id.
+- ACTION ITEM (separate from our plugin): raise the coarse/duplicated-timestamp
+  behavior with the file-forager author and/or the Sage data-conventions owners,
+  referencing (A) and (B). Not blocking image-sampler2.

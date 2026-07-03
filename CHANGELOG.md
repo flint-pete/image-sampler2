@@ -17,6 +17,11 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 - Analysis Section 9: what a downloaded JPG reveals (cv2.imwrite embeds no EXIF),
   the object-store URL structure, the verified filename->event-log reverse-lookup
   recipe, and the ns-as-key uniqueness problem.
+- Analysis Section 10: coarse-clock/coarse-timestamp finding. Diagnosed W096's
+  whole-second upload timestamps to file-forager stamping by source-file mtime
+  (not time_ns()) and reusing one second across multiple artifacts — a
+  plugin-level provenance issue outside image-sampler2/pywaggle. Flagged as an
+  upstream action item (raise with file-forager author / Sage data conventions).
 
 ### Changed
 - Design decision (linking/uniqueness): object name = `<ns>-<camera>.jpg`
