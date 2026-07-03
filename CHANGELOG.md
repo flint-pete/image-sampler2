@@ -31,6 +31,21 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   exposure telemetry).
 
 ### Changed
+- Design (EXIF field set, Section 12 — LOCKED): Option C hybrid — standard EXIF
+  tags where a real one fits (Model=vsn, Software=plugin+version, DateTimeOriginal
+  =capture, ImageUniqueID=SHA256, GPS=lat/lon) PLUS a complete JSON blob in
+  UserComment for lossless round-trip of all 13 fields. unique_id = SHA256 of the
+  saved JPEG bytes (also an integrity check).
+- Design (timestamp source + filename, Section 13 — LOCKED): the ONE authoritative
+  time is the NODE Linux clock (RTC/GPS-disciplined), never the camera. Filename
+  prefix switches from send-time (upstream) to CAPTURE time (node time_ns() at
+  grab); upload time (node time_ns() at send) is stored in meta+EXIF. Filename
+  scheme Opt-4: `<node_capture_ts_ns>-v2-<vsn>-<camera>.jpg`. The "v2" marker
+  flags the changed timestamp meaning + new machinery; vsn fixes cross-node ns
+  collisions; camera fixes same-node batch collisions; the guaranteed 1:1 key is
+  the EXIF SHA256. PREREQUISITE before production: resolve back-dated-timestamp
+  handling (open Q2) and audit the watcher polling window.
+
 - Design mandate (acquisition/metadata): where possible, acquire the ORIGINAL
   ENCODED image from the camera's native still endpoint and save raw JPEG bytes
   UNTOUCHED so high-quality-camera metadata (e.g. Mobotix M1IMG, Hanwha EXIF) is

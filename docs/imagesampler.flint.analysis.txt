@@ -752,3 +752,150 @@ OPEN ITEMS:
   - Confirm the exact Reolink/Hanwha native still URLs + auth we will use in the
     plugin (Reolink cmd=Snap confirmed working with admin creds on H00F).
 
+
+───────────────────────────────
+12. EXIF METADATA FIELD SET  (LOCKED: Option C hybrid + SHA256 unique id)
+───────────────────────────────
+Goal: embed enough in the JPEG that (1) a downloaded bare file is self-describing
+and (2) the file carries a construction-guaranteed unique key to find its exact
+event-log record (see Sections 6, 9.3, 9.4).
+
+DECISION (Pete, 2026-07-03): Option C (HYBRID) with SHA256 as the unique id.
+  - Standard EXIF tags where a real one fits (self-describing to any tool/human).
+  - PLUS a complete JSON blob in UserComment (lossless machine round-trip of ALL
+    fields, including those with no standard EXIF home).
+  - unique_id = SHA256 of the saved JPEG bytes (doubles as an integrity check).
+
+Why not the alternatives:
+  - Option A (standard tags only): several fields (job, task, upload_ts, acq_path,
+    object_name) have NO standard EXIF home -> lossy.
+  - Option B (JSON blob only): complete but not human/tool self-describing at a
+    glance.
+  - Option C keeps both virtues; mild duplication is a robustness feature.
+
+EXIF STRUCTURE REMINDER (constraints that shaped the map):
+  - EXIF has NO arbitrary key/value; every field is a numbered tag. Custom data
+    must live in free-form tags (UserComment, ImageDescription, ImageUniqueID).
+  - DateTime tags are STRING "YYYY:MM:DD HH:MM:SS" (second res, no TZ). Sub-second
+    -> SubSecTime*; timezone -> OffsetTime* (EXIF 2.31). Older tools ignore these.
+  - GPS lat/lon are rationals + N/S/E/W ref.
+  - meta going to pywaggle must be str->str; timestamps are ns ints >= 2000-01-01.
+
+THE FIELD SET (13 fields):
+  #  field                 source                     purpose
+  1  vsn                   server/env                 node identity; x-node key
+  2  node_id               server/env                 hw id; matches store path
+  3  job                   env WAGGLE_JOB_ID          store path seg; log join
+  4  task                  env                        event-log field
+  5  plugin+version        env (image ref)            store path seg; provenance
+  6  camera / stream       plugin arg                 which sensor; in object name
+  7  capture_timestamp_ns  NODE time_ns() at grab     true capture instant (Sec 13)
+  8  upload_timestamp_ns   NODE time_ns() at send     send instant; latency (Sec 7)
+  9  unique_id (sha256)    hash of saved bytes        guaranteed 1:1 key + integrity
+  10 object_name           <ts>-v2-<vsn>-<camera>.jpg exact store filename (bridge)
+  11 lat / lon             env or arg                 geolocation (H00F 41.7180,
+                                                      -87.9827)
+  12 acquisition_path      plugin                     "native-raw" | "opencv-reencoded"
+  13 schema_version        const "sage-img-1"         lets the embed format evolve
+
+EXIF MAPPING (Option C):
+  0th IFD:
+    Make             = preserved camera Make if native-raw, else "Sage/Waggle"
+    Model            = <vsn>                         (human-visible node)
+    Software         = <plugin>:<version>
+    DateTime         = capture time (sec res, from NODE clock)
+    ImageDescription = human line: "Sage image-sampler2 v2; vsn=H00F; camera=top;
+                       job=..."
+  Exif SubIFD:
+    DateTimeOriginal   = capture time "YYYY:MM:DD HH:MM:SS"  (NODE clock)
+    SubSecTimeOriginal = fractional seconds of capture
+    OffsetTimeOriginal = "+00:00"                    (UTC)
+    ImageUniqueID      = <sha256>                    (spec'd home for a unique id)
+    UserComment        = <JSON blob of ALL 13 fields> (authoritative, lossless)
+  GPS IFD:
+    GPSLatitude/Ref, GPSLongitude/Ref = lat/lon
+    GPSDateStamp/GPSTimeStamp         = capture time (optional redundancy)
+
+UserComment JSON blob (authoritative copy), example:
+  {"schema":"sage-img-1","vsn":"H00F","node":"0000...","job":"...","task":"...",
+   "plugin":"registry.../...:0.4.0","camera":"top",
+   "capture_ts_ns":1783112408323875000,"upload_ts_ns":1783112409489787702,
+   "uid_sha256":"9f3a...","object_name":"1783112408323875000-v2-H00F-top.jpg",
+   "lat":41.7180,"lon":-87.9827,"acq":"native-raw"}
+
+NOTE ON native-raw + EXIF injection: when preserving camera bytes (Sec 11), we
+INSERT our EXIF/UserComment into the existing JPEG without re-encoding, leaving
+camera segments (e.g. Mobotix M1IMG) intact. The SHA256 is computed over the
+final saved bytes (after injection) so it matches what lands in the store.
+
+
+───────────────────────────────
+13. TIMESTAMP SOURCE + v2 FILENAME SCHEME  (LOCKED)
+───────────────────────────────
+DECISION (Pete, 2026-07-03): the ONE authoritative time is the NODE's Linux clock
+(RTC, GPS-disciplined where available) — NEVER the camera's clock.
+
+Rationale: a camera may have just been flashed or power-cycled and have a wrong
+clock; it must NOT be the source of the key that locates images + metadata. Sage
+nodes have RTC and, in some cases, GPS time, giving a clear, consistent time of
+day. We rely on exactly one time source, and it is the best time the Linux system
+has.
+
+Two times, BOTH from the node clock (node time_ns()):
+  - capture_timestamp = node time_ns() at the moment of grab   -> the FILENAME
+    prefix (via pywaggle upload_file(timestamp=capture_ts))
+  - upload_timestamp  = node time_ns() at the moment of send   -> stored in meta
+    + EXIF UserComment
+Camera-side time (e.g. Mobotix TIM/TZN/TIT) is PRESERVED in the embedded camera
+block for reference only; it is never the key and never the record timestamp.
+
+SWITCHING THE FILENAME PREFIX FROM SEND-TIME TO CAPTURE-TIME — documented loudly:
+  Upstream imagesampler stamps at UPLOAD time (get_timestamp() inside
+  upload_file(), Sections 6-7). image-sampler2 stamps at CAPTURE time. This
+  CHANGES THE MEANING of the filename's leading timestamp. To prevent confusing
+  old (send-time) names with new (capture-time) names, the filename carries an
+  explicit version marker "v2".
+
+FILENAME SCHEME (LOCKED: Opt-4):
+  pywaggle owns the "{timestamp}-" prefix; we own the rest (Path(path).name).
+  Saved basename (FILENAME) = v2-<vsn>-<camera>.jpg
+  Full object name          = <node_capture_ts_ns>-v2-<vsn>-<camera>.jpg
+  Example                    = 1783112408323875000-v2-H00F-top.jpg
+       node ns capture ──┘  │   │     └ camera / stream name
+                            │   └ vsn  (cross-node disambiguation; self-identifies)
+                            └ v2  (convention marker: prefix = CAPTURE time)
+
+Why each element (ties back to Section 9.4 collisions):
+  - v2       : satisfies "don't confuse old vs new"; marks the whole machinery
+               change (capture-time prefix, EXIF embed, raw-bytes acquisition).
+  - vsn      : fixes CROSS-node same-ns collisions (695 seen in 24h); lets a bare
+               file self-identify its node without opening EXIF.
+  - camera   : fixes SAME-node multi-stream/batch collisions (the old constant
+               sample.jpg clobber; 760 same-node seen in 24h).
+  - (SHA256 NOT in the filename — Opt-4): unique in practice via vsn+camera+ns;
+    the construction-GUARANTEED 1:1 key lives in EXIF ImageUniqueID (Section 12).
+    (Opt-5, adding sha12 to the name, was considered and declined for shorter,
+    human-readable names.)
+
+DANGERS / DOWNSIDES OF THE CAPTURE-TIME PREFIX (mitigations in place):
+  1. Record timestamp no longer == ingest time. Consumers assuming
+     "record.timestamp ~= arrival" are subtly wrong; batch-and-hold back-dates the
+     record. -> OPEN Q2 (Section 8): verify data-service tolerates back-dated
+     record timestamps before relying on this in production.
+  2. Time-window queries can MISS records. A just-uploaded image captured 20 min
+     ago has a 20-min-old timestamp; "last 5 min" polls won't see it. -> audit our
+     own watcher's polling window; don't key freshness on record timestamp alone.
+  3. Send-time would be lost. -> MITIGATED: upload_timestamp always stored in meta
+     + EXIF (Section 7/12). capture->upload latency = upload_ts - capture_ts.
+  4. Bad clocks. capture_ts is node time_ns(); pywaggle rejects < MIN_TIMESTAMP_NS
+     (pre-2000). -> if the node clock itself is unset the upload fails fast (good).
+     Camera clock is irrelevant by design (never used as key).
+  5. Uniqueness under coarse node clocks: vsn+camera+ns is unique in practice;
+     the guaranteed key remains the EXIF SHA256, not the timestamp.
+
+PREREQUISITE BEFORE ENABLING IN PRODUCTION:
+  Resolve OPEN Q2 (back-dated record timestamp handling by the data-service) and
+  confirm the slack-hummingbird watcher's polling window will not drop back-dated
+  records.
+
+
