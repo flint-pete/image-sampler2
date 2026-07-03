@@ -1,0 +1,421 @@
+═══════════════════════════════════════════════
+IMAGESAMPLER — CODE STUDY
+═══════════════════════════════════════════════
+
+App:        waggle-sensor/plugin-imagesampler  (portal: yonghokim/imagesampler)
+Author:     Yongho Kim (ANL)
+Version:    0.3.8
+Source:     https://github.com/waggle-sensor/plugin-imagesampler  (branch: main)
+Portal:     https://portal.sagecontinuum.org/apps/app/yonghokim/imagesampler
+Size:       ~110 lines Python (app.py) + a small standalone upload.py helper
+Deps:       pywaggle[vision]==0.56.*, croniter
+Base image: waggle/plugin-base:1.1.1-base   (builds amd64 + arm64)
+Analyzed:   2026-07-03 (on Flint)
+
+What it is: the canonical "collect training data / show inference context"
+plugin. Its whole job is to grab a still frame from a camera stream and either
+publish it to the Sage cloud or write it to local disk.
+
+
+───────────────────────────────
+1. CAMERA SOURCE
+───────────────────────────────
+- Source is whatever you pass to --stream: a named stream (bottom_camera,
+  top_camera) resolved via the node's camera config, or a raw URL
+  (rtsp://IP:PORT/..., RTSP/HTTP).
+- Acquisition is waggle.data.vision.Camera(stream) -> cam.snapshot(). One frame,
+  context-managed (opens and closes the camera each capture).
+- Multiple streams supported: repeat --stream; each gets its own
+  multiprocessing.Process. Optional parallel --name list labels them (must match
+  count/order).
+- The camera name is attached as meta={"camera": stream_name} on the upload —
+  that's the only metadata published.
+
+
+───────────────────────────────
+2. FREQUENCY OF SAMPLES
+───────────────────────────────
+Two modes, decided by --cronjob:
+
+- One-shot (default, --cronjob ""): captures exactly once, then exits 0. Cadence
+  is entirely external — you rely on the SES scheduler to re-launch the pod on
+  whatever schedule you set. This is the "periodic sampling via the scheduler"
+  path.
+- Self-scheduled (--cronjob "0 * * * *"): the process runs FOREVER, using
+  croniter to sleep until the next cron tick, then captures, loops. The example
+  is hourly. Cadence is baked into the running container.
+
+Key detail: in cronjob mode the Plugin() context is opened ONCE and held for the
+life of the process; captures happen inside that single session. In one-shot
+mode, Plugin() is opened, one capture taken, closed.
+
+
+───────────────────────────────
+3. WHEN / HOW IMAGES ARE SAVED
+───────────────────────────────
+The capture() function branches on --out-dir:
+
+- Cloud publish (out_dir empty): always writes to a fixed local filename
+  sample.jpg, then plugin.upload_file("sample.jpg", meta={"camera": name}).
+  Every stream/process overwrites the same sample.jpg in the CWD before
+  uploading — see pitfalls.
+- Local save (out_dir set): does NOT upload. Builds a UTC-partitioned path from
+  the frame timestamp:
+      OUTDIR/<stream>/YYYY/MM/DD/HH/YYYY-MM-DDTHH:MM:SS±zzzz.jpg
+  Directory tree created on demand. If the stream is a URL, the slashes become
+  subdirectories (OUTDIR/rtsp:/IP:PORT/...).
+
+So: it's one or the other — you CANNOT both upload to the cloud and keep a local
+copy in a single run. Every capture that reaches capture() is saved/published
+unconditionally; there is no content gate.
+
+
+───────────────────────────────
+4. SHORTCOMINGS
+───────────────────────────────
+
+Structural / correctness:
+- No trigger-based sampling despite the tagline. The description says
+  "Periodical/Trigger-based," but the code only does periodic (cron or
+  scheduler). There is zero trigger logic — no sensor/event/detection hook.
+  Purely time-driven.
+- Upload vs local is mutually exclusive. Can't do both; can't upload AND archive
+  locally. A common real need (keep a node-local buffer AND push to cloud) isn't
+  expressible.
+- Shared sample.jpg race. In cloud mode with multiple --stream workers, every
+  process writes the same sample.jpg in the same CWD before uploading.
+  Concurrent captures can clobber each other's file between save() and
+  upload_file() -> a stream can upload another stream's frame. No per-stream temp
+  filename, no tempfile, no lock.
+- Uploaded name/timestamp reflect UPLOAD time, not CAPTURE time. [CORRECTED —
+  see Section 6 for the full naming mechanism.] The earlier draft of this note
+  claimed "no timestamp travels with the cloud image." That was WRONG: pywaggle
+  stamps every upload with a nanosecond timestamp that becomes both the
+  object-store name prefix (e.g. 1783105211072377356-sample.jpg) and the record's
+  timestamp field + sidecar meta. So capture time DOES travel — approximately.
+  The real, subtler defect: imagesampler captures a frame (which carries its own
+  cam snapshot sample.timestamp) but then calls plugin.upload_file(name, meta)
+  WITHOUT passing timestamp=sample.timestamp. pywaggle therefore falls back to
+  get_timestamp() computed at UPLOAD time, inside upload_file(). For a fast
+  capture->upload the two are nearly identical, but they are NOT the same instant:
+  the recorded/naming timestamp is when the file was staged for upload, not when
+  the shutter fired. The frame's true capture timestamp (available for free as
+  sample.timestamp) is silently discarded. This matters for "show the context at
+  inference time" alignment and for any downstream join keyed on capture instant.
+
+Robustness / ops:
+- No error handling around capture. Camera(stream)/snapshot() can throw (camera
+  offline, RTSP timeout, auth failure). In one-shot mode that's a nonzero exit
+  (arguably fine — fail fast). In cronjob mode a single transient camera error
+  kills the forever-loop process and the plugin stops sampling until the pod is
+  restarted. No try/except, no retry, no backoff.
+- No heartbeat / liveness measurement. Unlike our plugins, it publishes no
+  plugin.duration.* and no periodic "alive" record. In cronjob mode, if the
+  camera is dark, there's literally no signal distinguishing "running but nothing
+  captured" from "crashed." (Empty-scene liveness is exactly the pattern we rely
+  on elsewhere.)
+- Cron drift / no catch-up. croniter sleeps to the next tick; if a capture takes
+  longer than the interval, or the process is slow, there's no missed-tick
+  handling. Also it computes the next tick from now at loop top, so a long
+  capture can skip a tick silently.
+- No image-format / quality / resize options. Always full-frame JPEG at whatever
+  sample.save() defaults to. No --jpeg-quality, no downscale, no crop, no format
+  choice.
+- No max-count / max-runtime / duration bound. Cronjob mode is infinite by
+  design — no clean self-exit, which is awkward for the shared-GPU /
+  windowed-scheduling pattern you use (though this plugin is CPU-only, so less
+  critical).
+- sample.jpg written to CWD, not a temp dir — assumes writable working directory.
+
+Documentation / packaging:
+- README dev note is stale ("As of Dec 2020... as PyWaggle's upload feature
+  becomes real" — it's long since real and in use).
+- upload.py is a leftover manual helper (COPY'd in Dockerfile but not part of the
+  main flow); minor cruft.
+- No tests.
+
+
+───────────────────────────────
+5. HOW IT COULD BE UPDATED
+───────────────────────────────
+In rough priority (aligned with project conventions — fail-fast, heartbeat,
+verify-in-data-plane):
+
+High value:
+1. Add real trigger-based sampling (deliver on the tagline): subscribe to a
+   Waggle topic / threshold (e.g. capture when env.count.bird > 0, or on an
+   external signal) as an alternative to cron. This is the biggest conceptual gap
+   and dovetails with the detect-then-classify / watcher work — an event-gated
+   sampler is exactly what a "save the frame when something interesting happens"
+   pipeline wants.
+2. Fix the multi-stream sample.jpg race — use tempfile.NamedTemporaryFile or a
+   per-stream filename (sample_{stream_name}.jpg).
+3. Allow upload AND local save together (make them independent flags, not an
+   either/or branch).
+4. Pass the real capture timestamp through to the upload (one-line fix). pywaggle
+   already accepts it: plugin.upload_file(path, meta=..., timestamp=...). Change
+   imagesampler's call to timestamp=sample.timestamp so the object-store name
+   prefix AND the upload record's timestamp reflect the true camera-capture
+   instant instead of the upload instant. See Section 6 for why the current code
+   gets the upload time by default. (Optionally also add "camera_timestamp" to
+   meta explicitly for belt-and-suspenders.)
+
+Robustness:
+5. Wrap capture in try/except with retry + backoff in cronjob mode so one camera
+   hiccup doesn't kill the loop; log and continue to the next tick. (Keep
+   fail-fast on config errors — bad cron string, missing stream.)
+6. Add a heartbeat / liveness publish every cycle (even on failure), plus
+   optionally plugin.duration.* phase timing (input + save/upload) — consistent
+   with the rest of the fleet and makes "running but silent" detectable in the
+   data plane.
+7. Add --max-count and/or --max-runtime for clean self-exit
+   (windowed-scheduling friendliness).
+
+Quality / features:
+8. Image controls: --jpeg-quality, --resize/--max-dim, optional PNG — matters for
+   training-data size and bandwidth on constrained nodes.
+9. Modernize deps (croniter has had CVEs/deprecations; pin newer) and refresh the
+   README dev note.
+10. Add tests (mock Camera; verify path formatting, cron scheduling math, meta
+    contents).
+
+
+───────────────────────────────
+BOTTOM LINE
+───────────────────────────────
+It's a small, clean, single-purpose periodic frame grabber — solid for
+"scheduler launches it, it takes one picture." Its real shortcomings are:
+  (a) the advertised trigger mode doesn't exist,
+  (b) upload/local are mutually exclusive,
+  (c) a genuine multi-stream file race,
+  (d) the recorded/naming timestamp is UPLOAD time, not the frame's true
+      capture time (the free sample.timestamp is discarded), and
+  (e) no error resilience or liveness in the forever-loop mode.
+
+For our work the most interesting upgrade is turning it into a genuinely
+event-triggered sampler with heartbeat + real-timestamp metadata — which is
+essentially the "periodic sampler plugin" already scoped in ToDo #23 Stage 5,
+and it overlaps cleanly with the detect-then-classify save path.
+
+
+───────────────────────────────
+6. HOW UPLOADED IMAGES ARE NAMED  (pywaggle mechanism)
+───────────────────────────────
+Object-store objects look like:  1783105211072377356-sample.jpg
+
+This name is generated by PYWAGGLE, not by imagesampler. imagesampler's only
+contribution is the base filename "sample.jpg":
+
+    # imagesampler app.py capture():
+    sample_file_name = "sample.jpg"
+    sample.save(sample_file_name)
+    plugin.upload_file(sample_file_name, meta={"camera": stream_name})
+
+It hands the literal "sample.jpg" to plugin.upload_file() and never touches the
+number prefix.
+
+pywaggle (src/waggle/plugin/plugin.py, Plugin.upload_file) does the naming:
+
+    def upload_file(self, path, meta={}, timestamp=None, keep=False):
+        timestamp = timestamp or get_timestamp()   # <-- the number
+        ...
+        meta["filename"] = Path(path).name          # "sample.jpg"
+        self.uploader.upload_file(path=path, meta=meta,
+                                  timestamp=timestamp, keep=keep)
+        self.__publish("upload", upload_path.name, meta, timestamp)
+
+The stored name is assembled as:   f"{timestamp}-{src.name}"
+
+    1783105211072377356  -  sample.jpg
+    └─ pywaggle timestamp ┘   └─ imagesampler's filename ┘
+
+The number:
+- It is a NANOSECOND epoch timestamp (integer, time.time_ns()-style), UTC.
+  1783105211072377356 / 1e9 -> 1,783,105,211 s since 1970.
+- It is the SAME value used as the "upload" message's timestamp field AND written
+  into the sidecar meta file. So the filename prefix IS the record timestamp.
+- Uniqueness comes from the nanosecond prefix (two captures can't share a
+  nanosecond) — NOT from anything imagesampler does.
+
+CRUCIAL detail — WHERE the timestamp comes from:
+- get_timestamp() is evaluated INSIDE upload_file(), i.e. at UPLOAD time.
+- imagesampler does NOT pass timestamp=sample.timestamp, even though the camera
+  snapshot carries its own capture timestamp (sample.timestamp, also nanoseconds)
+  and upload_file() accepts a timestamp= argument.
+- => The prefix/record timestamp reflects the UPLOAD instant, not the capture
+  instant. Close for a fast capture->upload, but not identical, and drifts if
+  upload is delayed (e.g. the cross-country object-store lag we hit elsewhere).
+
+Two naming schemes exist in pywaggle (don't confuse them):
+- OBJECT-STORE / staged object name = f"{timestamp}-{filename}"
+      -> 1783105211072377356-sample.jpg   (this is what you see in the store)
+- ON-NODE staging DIRECTORY (Uploader.upload_file in uploader.py) =
+      f"{timestamp}-{sha1sum}"  containing two files: "data" + "meta"
+  This is the local staging layout (checksum-based dir), NOT the object name.
+
+Fix implication: passing timestamp=sample.timestamp into upload_file() makes the
+object name AND the record timestamp reflect true capture time. One line. See
+upgrade item #4.
+
+
+───────────────────────────────
+7. UPLOAD METADATA — WHAT PYWAGGLE ADDS vs WHAT THE SERVER ADDS
+───────────────────────────────
+Traced through pywaggle main:
+  src/waggle/plugin/plugin.py  (Plugin.upload_file -> __publish -> wagglemsg.Message)
+  src/waggle/plugin/rabbitmq.py (RabbitMQPublisher.__flush_messages)
+
+When imagesampler calls:
+    plugin.upload_file("sample.jpg", meta={"camera": name})
+pywaggle emits ONE message with name="upload" carrying exactly these fields:
+
+  - name      = "upload"   (RESERVED system name; raise_for_invalid_publish_name
+                            blocks any plugin from publishing this name itself)
+  - value     = upload_path.name = "{timestamp}-sample.jpg"
+                            (e.g. 1783105211072377356-sample.jpg)
+  - timestamp = timestamp or get_timestamp()   <-- THE ONLY TIME FIELD
+                            Shared by: the object name prefix, the message
+                            timestamp, AND the sidecar meta file. With a
+                            timestamp= argument this is capture time; without it,
+                            upload time. There is exactly ONE timestamp slot —
+                            pywaggle does NOT natively carry two times.
+  - meta      = your dict, plus ONE auto-injected key:
+                    meta["filename"] = Path(path).name   (-> "sample.jpg")
+                So imagesampler's full published meta is just:
+                    {"camera": "<stream_name>", "filename": "sample.jpg"}
+                pywaggle adds ONLY "filename". Nothing else.
+
+Hard constraints pywaggle enforces on every publish/upload:
+  - valid_meta(): meta MUST be a FLAT dict of str -> str. Values must be strings.
+    A second timestamp therefore has to be stringified:
+        meta["capture_timestamp"] = str(sample.timestamp)   (not an int)
+  - MIN_TIMESTAMP_NS guard: __publish rejects any timestamp < 2000-01-01 (ns).
+    This is the seconds-vs-nanoseconds unit tripwire. Any hand-built timestamp
+    must be nanoseconds since epoch.
+
+WHAT PYWAGGLE DOES **NOT** ADD (injected server-side):
+  In rabbitmq.py the ONLY node/job context attached on the wire is the AMQP
+  property app_id (from env WAGGLE_APP_ID), and it is set as a message PROPERTY,
+  not as meta. The code comment is explicit:
+      "app_id is used by data service to validate and tag additional metadata
+       provided by k3s scheduler."
+  Therefore vsn/node, host, job, task, plugin (the registry...:version tag),
+  zone, lat/lon — all the meta you see in the Sage data API — are injected
+  SERVER-SIDE (validator / data-service), keyed off app_id + the k3s scheduler,
+  AFTER the message leaves the node. The plugin sends only:
+      name / value / timestamp / meta{camera, filename}  + app_id property
+  and the cloud enriches the rest.
+
+CONSEQUENCE FOR BATCH-AND-HOLD (capture now, upload later):
+  The single message timestamp is the ONLY time the record carries out of the
+  plugin. If you capture at T0, hold for analysis, and upload at T1:
+    - status quo -> record stamped T1 (upload); T0 (capture) is lost forever.
+    - pywaggle offers NO second time slot automatically.
+  The two-timestamp scheme MUST be implemented by us, in the plugin, via meta.
+  This becomes materially important the moment capture and upload are decoupled
+  (batch pull, hold-for-analysis, or the cross-country object-store lag we've
+  already been bitten by) — the T1-minus-T0 gap can grow from milliseconds to
+  minutes.
+
+RECOMMENDED TWO-TIMESTAMP PATTERN (given the above constraints):
+  1. Authoritative record timestamp = CAPTURE time:
+         plugin.upload_file(path, meta=meta, timestamp=sample.timestamp)
+     -> object-name prefix AND record timestamp reflect when the shutter fired;
+        stays correct no matter how long the hold before upload.
+  2. Preserve UPLOAD/SEND time in meta (captured at the actual upload call):
+         meta["upload_timestamp"] = str(get_timestamp())
+     -> because pywaggle stamps the message with capture time, the send time must
+        be recorded by us or it is gone.
+  3. Optional redundancy (survives future refactors):
+         meta["capture_timestamp"] = str(sample.timestamp)
+  4. Capture->upload latency is then computable at query time:
+         upload_timestamp - timestamp
+     directly measuring the drift / cross-country lag.
+
+  Rules to honor: all meta values are STRINGS (valid_meta); all timestamps are
+  NANOSECONDS >= 2000-01-01 (MIN_TIMESTAMP_NS).
+
+OPEN QUESTIONS to confirm before locking this in:
+  Q1. Does sample.timestamp from the Reolink/RTSP path carry true EXPOSURE time
+      or merely frame-ARRIVAL time? (Determines how meaningful "capture time"
+      really is vs upload time.)  [being verified — see Section 8]
+  Q2. How does the data-service treat a client-supplied timestamp OLDER than the
+      ingest time? Does anything downstream assume record timestamp ~= ingest
+      time? Batch-and-hold will intentionally make record timestamps lag ingest.
+
+
+───────────────────────────────
+8. RTSP sample.timestamp SEMANTICS  (Q1 VERIFIED)
+───────────────────────────────
+Traced through pywaggle src/waggle/data/vision.py + timestamp.py (main).
+
+FINDING: sample.timestamp is the HOST WALL-CLOCK time of frame GRAB (node clock),
+NOT camera exposure time. For RTSP specifically it is the grab time recorded by a
+background daemon thread and may be up to ~10 ms stale relative to the returned
+frame. It is NEVER the RTP / sensor / camera-side timestamp.
+
+Mechanism:
+- Camera.__enter__ sets enable_daemon=True for anything that is NOT a file:// URL
+  -> RTSP/HTTP go through the daemon path.
+- The daemon _run() loop:
+        ok = self.capture.grab()          # OpenCV grabs next frame from buffer
+        self.timestamp = get_timestamp()  # host time.time_ns(), set AFTER grab
+        time.sleep(0.01)                  # loops ~every 10 ms
+- snapshot() -> grab_frame() returns the most recent daemon frame with the
+  daemon's stored self.timestamp:
+        timestamp = self.timestamp
+        ok, data = self.capture.retrieve()
+        return ImageSample(data=data, timestamp=timestamp, ...)
+- get_timestamp() (timestamp.py) IS literally time.time_ns() (node clock).
+
+Three consequences:
+  1. Host-clock GRAB time, not sensor EXPOSURE time. No RTP timestamp, no
+     camera clock, no EXIF ever reaches sample.timestamp. Code comment even notes
+     OpenCV's RTSP FPS is garbage ("returns 180000"), so pywaggle deliberately
+     ignores camera timing and stamps with host time.
+  2. For RTSP, up to ~10 ms stale: the daemon grabs continuously every 10 ms and
+     snapshot() takes whatever the last grab was; the stamp is "when the daemon
+     last grabbed" (<= ~10 ms before your snapshot() call). Bounded, small, but
+     not the exact frame instant.
+  3. UNMEASURED camera->node pipeline delay: the frame OpenCV hands you was
+     encoded on the camera and traversed the network+decoder buffer (tens to
+     hundreds of ms) BEFORE the grab. sample.timestamp marks node-grab, not
+     camera-shot. So even "capture time" hides a camera->node latency pywaggle
+     does not expose.
+
+Other sources, for completeness:
+  - USB / non-daemon fallback (grab_frame else-branch): get_timestamp()
+    immediately after a synchronous grab() — same host-clock semantics, no 10 ms
+    daemon staleness.
+  - file:// video (VideoSample.__next__): synthesized timestamps base +
+    frame_index/fps — computed, not real.
+  - ImageFolder (our --image-dir test path): timestamp = file st_mtime_ns (file
+    modification time). NB: in test-dir mode "capture time" is just file mtime.
+
+IMPLICATIONS FOR THE TWO-TIMESTAMP DESIGN:
+  - The design still holds and is still worth doing, but LABEL IT HONESTLY:
+    sample.timestamp = "node frame-grab time," NOT "exposure time." It is the
+    earliest well-defined instant the node can attest to, and it is strictly
+    better than upload time for batch-and-hold: it is pinned at grab, BEFORE any
+    hold/analysis/upload delay. That is exactly the drift we want to remove.
+  - It does NOT eliminate the camera->node pipeline delay (encode+network+decode
+    buffer), which for RTSP is real and unmeasured. True sub-second scientific
+    alignment (sun position, external sensors) is NOT achievable from either
+    timestamp; it would require the RTP/ONVIF timestamp, which pywaggle does not
+    surface.
+  - Field naming (precise):
+        record timestamp = sample.timestamp   -> document as GRAB time (node clk)
+        meta["upload_timestamp"]               -> send time T1
+        upload_timestamp - timestamp           -> hold+stage+upload latency
+    That delta is precisely the batch-and-hold drift metric we care about.
+
+BATCH-AND-HOLD PERFORMANCE NOTE:
+  The daemon thread lives only inside the `with self.capture:` block, and
+  Camera.snapshot() wraps each call in `with self.capture:` — so every snapshot
+  spins up the RTSP daemon, grabs, and tears it down. At high pull rates this is
+  inefficient (repeated RTSP connect/daemon churn). A batch design should hold
+  ONE Camera/_Capture open across the batch and use stream()/repeated grabs
+  rather than per-frame snapshot().
+
+
+
