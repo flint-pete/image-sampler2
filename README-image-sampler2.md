@@ -29,3 +29,10 @@ copy of the upstream plugin as the starting point for planned enhancements.
 
 Use the analysis doc to write a staged modification plan, then implement.
 Nothing in the original source has been changed yet.
+
+## Changelog
+
+All improvements and design changes are recorded in `CHANGELOG.md`. **After each
+improvement or design change to the code, add a short entry under `[Unreleased]`.**
+When a set of changes is cut into a plugin version, move them under a new version
+heading and bump `sage.yaml`.
