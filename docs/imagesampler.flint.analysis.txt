@@ -60,6 +60,82 @@ Key detail: in cronjob mode the Plugin() context is opened ONCE and held for the
 life of the process; captures happen inside that single session. In one-shot
 mode, Plugin() is opened, one capture taken, closed.
 
+───────────────────────────────
+2b. FREQUENCY OF SAMPLES — image-sampler2 DESIGN (LOCKED)
+───────────────────────────────
+DECISION (Pete, 2026-07-03): replace the single, poorly-named --cronjob flag with
+two DESCRIPTIVE, MUTUALLY-EXCLUSIVE, REQUIRED mode flags. The name --cronjob
+conflated "how it is scheduled" with "what the process does"; the new names say
+exactly what the process does.
+
+CLI (BREAKING CHANGE vs upstream — like the v2 filename change in Section 13):
+  --one-shot            capture exactly once, then exit 0. External cadence: rely
+                        on the SES scheduler to re-launch the pod. (was: --cronjob "")
+  --continuous <SECONDS>  run forever, capturing on a FIXED PERIOD of <SECONDS>.
+                        The interval is the flag's REQUIRED integer argument, so
+                        it is impossible to run continuously without an interval,
+                        and impossible to set an interval in one-shot mode.
+                        (was: --cronjob "<cron expr>")
+
+  - The two flags form a REQUIRED mutually-exclusive group (argparse
+    add_mutually_exclusive_group(required=True)). Passing BOTH, or NEITHER, is a
+    fail-fast parse error. No silent default mode.
+  - <SECONDS> is a positive integer; interval <= 0 is a fail-fast parse error.
+  - Plugin() session lifecycle is unchanged: --continuous opens Plugin() ONCE for
+    the life of the process; --one-shot opens, captures once, closes.
+  - croniter dependency (used by the old --cronjob cron-expression mode) is
+    dropped; scheduling is a plain fixed-period loop (below).
+
+FIXED-PERIOD SCHEDULING for --continuous (LOCKED design — safe + simple):
+  Requirement: fire on a fixed grid t0, t0+N, t0+2N, ...; never drift. If a cycle
+  OVERRUNS (slow/busy camera, large image, capture timeout), SKIP the missed
+  tick(s) — do NOT stack a backlog. Behavior must be predictable under slow/large
+  captures.
+
+  ALGORITHM — monotonic grid with skip (~12 lines):
+    N_ns  = interval_s * 1_000_000_000
+    start = time.monotonic_ns()          # MONOTONIC clock for scheduling
+    tick  = 0
+    while True:
+        target = start + tick * N_ns
+        now = time.monotonic_ns()
+        if target > now:
+            time.sleep((target - now) / 1e9)   # wait for this grid point
+        do_one_capture_with_timeout()          # BOUNDED; skips on timeout/error
+        now = time.monotonic_ns()
+        tick = (now - start) // N_ns + 1       # NEXT grid slot strictly in future
+                                               # -> missed ticks are dropped, O(1)
+
+  WHY IT IS SAFE (and why the naive loops are not):
+    - Naive `capture(); sleep(N)` DRIFTS (effective period = N + capture_time) —
+      rejected.
+    - Naive `next += N` accumulator goes NEGATIVE on overrun -> sleep(0) busy-loop
+      / silent backlog — rejected.
+    - This loop recomputes `tick` from ELAPSED time every cycle, so it is
+      self-correcting: an overrun of any number of periods lands on the next
+      future slot in ONE jump; no accumulator, no backlog, no runaway.
+    - MONOTONIC clock => immune to NTP steps / DST / manual clock-set. (The image
+      is STAMPED with wall-clock time per Section 13; scheduling and stamping are
+      cleanly separated.)
+    - Captures land on the fixed grid t0 + k*N => no drift.
+
+  BOUNDED CAPTURE is the other half of "no backlog" (required):
+    do_one_capture_with_timeout():
+      - Hard timeout on the grab (RTSP/HTTP). A slow/busy camera FAILS after the
+        timeout instead of blocking forever.
+      - On timeout/error: log a WARNING and SKIP this sample; return. NO inline
+        retry (a retry would eat the next tick and cause overruns).
+      - This is fail-SOFT: an occasional bad/slow capture drops one sample and the
+        loop continues (a bad frame must not kill a long-running process).
+    Config rule (fail-FAST): capture timeout SHOULD be < interval so one slow
+    capture cannot consume the next tick. If timeout >= interval, overruns are
+    expected (still safe via skip, just lossier) -> WARN at startup.
+
+  VERDICT: the clean algorithm meets every constraint (fixed period, skip-not-
+  stack, predictable under load, clock-jump proof) in ~12 lines. We do NOT need to
+  abandon the fixed-period approach. Only hard dependency: a bounded capture,
+  which we want regardless.
+
 
 ───────────────────────────────
 3. WHEN / HOW IMAGES ARE SAVED

@@ -14,6 +14,16 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Analysis Section 2b (LOCKED): replace the poorly-named --cronjob flag with two
+  descriptive, mutually-exclusive, REQUIRED mode flags — --one-shot (capture once,
+  exit; external SES cadence) and --continuous <SECONDS> (run forever on a fixed
+  period; interval is the flag's required positive-integer argument). Both/neither
+  or interval<=0 are fail-fast parse errors; croniter dependency dropped. Includes
+  the LOCKED fixed-period scheduling design: a ~12-line monotonic-grid-with-skip
+  loop that never drifts, skips missed ticks on overrun (no backlog), and is
+  clock-jump proof; requires a bounded capture (hard timeout -> warn+skip, no
+  inline retry; warn at startup if timeout>=interval). Breaking CLI change vs
+  upstream.
 - Analysis Section 1 design note: camera source selection should prefer the
   acquisition method that yields the best metadata in the resulting JPG — pull the
   original encoded image from the camera's native still endpoint and save raw
