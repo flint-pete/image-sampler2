@@ -1167,5 +1167,161 @@ also produce upload/event-log records and carry upload_timestamp, or are purely
 local scratch. Pending Pete.
 
 
+───────────────────────────────
+16. SHARED CACHE FOR CROSS-PLUGIN TRIGGERS (mode #3)  (design in progress)
+───────────────────────────────
+DIRECTION (Pete, 2026-07-04): the continuous cache is not private scratch — it is
+a SHARED BUFFER that OTHER plugins read after the fact. Motivating use cases:
+  - Audio plugin analyzes 30 s of sound, decides a lightning strike happened at
+    T=20 s, then reaches into the cache-dir and uploads the images captured in the
+    ~10 s BEFORE the sound event.
+  - A node miles away detects a wildfire at an instant and notifies nearby nodes;
+    a local agent on THIS node pulls cache images from that moment for another
+    view and uploads them.
+So the sampler's obligation is: make its local cache DISCOVERABLE + READABLE by
+other plugins on the node, uniquely per sampler instance.
+
+REQUIREMENTS:
+  R-A  Cross-plugin visibility: images written by the sampler pod must be readable
+       by a DIFFERENT plugin pod on the same node. By default each WES plugin runs
+       in its own pod with its own container FS (not shared), so the cache MUST sit
+       on a host-backed shared mount (a SHARED_ROOT) that WES bind-mounts into
+       plugin pods. (Existence proof that such a mount mechanism exists: pywaggle
+       already stages uploads to a node path the WES upload agent watches.)
+  R-B  Unique per plugin instance, visible to all: two users running the sampler on
+       the SAME camera with DIFFERENT options (resolution, white balance) must not
+       collide, yet both caches must be readable by trigger consumers.
+
+DECISIONS (Pete, 2026-07-04):
+  - UNIQUENESS KEY = --cache-name (2A LOCKED). The instance identity in the cache
+    path is a STABLE, user-supplied --cache-name, NOT the SES job id (which changes
+    every resubmit and cannot be predicted by a consumer) and NOT an opaque hash.
+    Consumers reference a known --cache-name.
+        <SHARED_ROOT>/<cache-name>/<camera>/ ...
+    where <camera> is the per-stream ring subdir from Section 15. Two differently-
+    configured samplers on one camera use two different --cache-name values.
+    --cache-name is REQUIRED with --continuous (fail-fast if missing); it must be a
+    filesystem-safe token (validate; fail-fast on illegal chars / path separators).
+  - SHARED_ROOT must be CONFIRMED on a real node: it must be (1) writable by a
+    plugin, and (2) PRESERVED ACROSS PLUGIN RESTART (host-backed, not pod-ephemeral).
+    This is verified on H00F (see 16.x below); the design is not locked until the
+    node confirms a shared, writable, restart-persistent mount + its path + the
+    cross-pod read permission model.
+  - DISCOVERY MECHANISM (runtime announcement of cache path/config) is DEFERRED to
+    "Planned Enhancements" (2B) — see Section 17. For the first working version,
+    consumers use CONVENTION: SHARED_ROOT + known --cache-name + <camera> subdir.
+
+RING <-> TRIGGER BEHAVIOR (2C — documented behavior for evict + trigger):
+  - SIZE THE CACHE >= LONGEST TRIGGER LOOKBACK. A trigger consumer typically wants
+    images from some seconds BEFORE the event (e.g. 10 s pre-roll for lightning).
+    The Section 15 ring evicts oldest-first under its count/size caps, so if the
+    cache is too small the wanted pre-event frames may already be gone. GUIDANCE:
+    set --cache-max-count / --cache-max-mb so the ring holds at least
+    (max_expected_trigger_lookback / sampling_interval) images, with margin. This
+    is a SIZING rule, not a mechanism change. Document it prominently for operators.
+  - CONCURRENT READ + EVICT IS SAFE (POSIX semantics):
+      * A consumer that has OPENED a cache file keeps a valid fd even if the ring
+        unlinks (evicts) that file mid-read — the inode persists until the fd
+        closes. No torn read from eviction.
+      * New files appear atomically (Section 15 temp -> os.replace), so a consumer
+        never observes a partially written .jpg.
+      * A consumer enumerating the dir may see a file that is evicted a moment
+        later (TOCTOU). Consumers MUST tolerate a path disappearing between listing
+        and open (treat ENOENT as "already evicted, skip"), and copy/upload
+        promptly rather than assume long-term residency.
+  - EVICTION IS OLDEST-FIRST BY CAPTURE-TS PREFIX (Section 15), so the cache always
+    retains the MOST RECENT window — which is exactly what look-back triggers want.
+  - The sampler does NOT coordinate with consumers (no locks). Consumers are
+    read-only; only the sampler writes/evicts its own per-stream ring.
+
+SHARED_ROOT — ON-NODE FINDINGS (H00F, 2026-07-04; edge-scheduler 0.28.0 source
++ live inspection):
+  CONFIRMED — a host-backed, restart-persistent, cross-pod shared mount EXISTS.
+  1. HOST AREA: /media/plugin-data/ exists on the node, backed by the root NVMe
+     (/dev/nvme0n1p1, 937G). Host-backed => PERSISTS across pod restart AND node
+     reboot. Not pod-ephemeral.
+  2. AUTOMATIC UPLOADS MOUNT (every plugin gets it): WES injects, into EVERY
+     plugin pod, a hostPath volume
+        host  /media/plugin-data/uploads/<JOB>/<NAME>/<TAG>
+        pod   /run/waggle/uploads   (read-write)
+     (Confirmed in edge-scheduler resourcemanager.go "Default Volume Mounts" and
+     in the live wes-upload-agent mount host=/media/plugin-data/uploads -> /uploads.)
+     The uploads area is ALREADY structured per-plugin-instance on disk
+     (e.g. bioclip-species-classifier-5647/, birdnet-species-5645/), proving WES
+     gives each plugin its own persistent, host-backed subtree.
+  3. CROSS-POD VISIBILITY (R-A satisfied): because these are hostPath mounts, a
+     file a sampler pod writes under /run/waggle/uploads lands on the host under
+     /media/plugin-data/uploads/..., and ANY other pod that mounts the same
+     hostPath reads it directly. That is the cross-plugin sharing mechanism.
+  4. EXPLICIT USER VOLUMES: WES also supports user-declared volumes (uservolume-N),
+     BUT the scheduler source warns they REQUIRE a nodeSelector or the pod fails to
+     schedule. So arbitrary hostPath is possible but gated — the automatic uploads
+     mount is the low-friction path.
+  5. PLUGIN ENV/CONTEXT also injected (useful for the sampler): WAGGLE_APP_ID
+     (=pod uid), HOST (=node name), plus WAGGLE_PLUGIN_HOST/PORT and a mounted
+     /run/waggle/data-config.json. ShareProcessNamespace=true; ServiceAccount
+     wes-plugin-account; RestartPolicy Never; finished pods GC'd after 60s.
+
+  DESIGN CONSEQUENCE — where does the shared cache live? Two viable homes:
+    (A) UNDER THE UPLOADS MOUNT: write the ring to
+          /run/waggle/uploads/.../  (host /media/plugin-data/uploads/...)
+        Pro: zero extra config, guaranteed present, persistent, already per-plugin.
+        Con: it lives in the UPLOAD staging tree the upload-agent watches — risk of
+        the agent trying to upload cache files we did NOT intend to upload. MUST
+        confirm the upload-agent only uploads files placed via the pywaggle
+        upload/publish path (staged into a specific subdir), NOT everything under
+        the mount. If it uploads everything, this home is WRONG for a local-only
+        ring (Q0). NEEDS CONFIRMATION.
+    (B) A DEDICATED SHARED SUBTREE: a user volume (uservolume-N) or a distinct
+        well-known host dir (e.g. /media/plugin-data/cache/<cache-name>/<camera>/)
+        mounted rw into the sampler and ro into consumers. Pro: cleanly separated
+        from upload staging; no accidental upload. Con: user volumes need a
+        nodeSelector (gotcha above); a fixed host dir must be provisioned/mounted.
+    LEANING: (B) a dedicated cache subtree so the ring is unambiguously LOCAL and
+    never accidentally uploaded, with SHARED_ROOT = a WES-provided shared mount.
+    Final choice pending: (i) whether the upload-agent scopes uploads to a
+    sub-path (making A safe), and (ii) whether a dedicated shared mount can be
+    provisioned without the nodeSelector penalty.
+
+  STILL TO CONFIRM (blocked mid-probe; not core-blocking):
+    - File permissions/uid the sampler writes with, and whether a consumer pod
+      running as a DIFFERENT user can read them (the "visible to all users" half
+      of R-B). Likely need world-readable files + traversable dirs; verify and, if
+      needed, chmod on write.
+    - Exact upload-agent scoping (does it upload everything under the mount, or
+      only a staged sub-path?) — decides home (A) vs (B).
+
+OPEN ITEMS for Section 16:
+  - Resolve cache home (A vs B) after confirming upload-agent scoping + shared-
+    mount provisioning.
+  - Confirm cross-user read permissions on written cache files.
+  - Q0 (from Section 15) still gates whether triggered uploads reuse the sampler's
+    upload path or are done by the consumer.
+
+
+───────────────────────────────
+17. PLANNED ENHANCEMENTS  (post-robust-testing backlog)
+───────────────────────────────
+Items intentionally DEFERRED until the core plugin (one-shot upload; continuous
+ring cache with cross-plugin visibility via convention) is working robustly in
+testing. Do NOT implement these before the base is solid.
+
+17.1  Cache discovery / announcement mechanism  (deferred from 2B, option ii)
+  Instead of consumers relying purely on CONVENTION (SHARED_ROOT + known
+  --cache-name + <camera>), have the sampler ANNOUNCE its cache at runtime so
+  consumers can discover path + camera + config dynamically. Candidate forms:
+    - Publish a Waggle record (e.g. env.imagesampler.cache_path or similar) with
+      cache-name, camera, config summary, and the on-node path; consumers query
+      the data plane to find active caches on the node.
+    - AND/OR write a small manifest file at a well-known name in the cache root
+      (e.g. <SHARED_ROOT>/<cache-name>/manifest.json) describing camera, config
+      (resolution, white balance, sampling interval), ring caps, and schema.
+  Rationale: robust to naming changes and multi-config nodes; lets a consumer
+  enumerate "what image caches exist here and what are they" without hard-coding.
+  Why deferred: convention is sufficient for first working version; announcement
+  adds a discovery contract we should design once the cache mechanics are proven.
+
+
+
 
 

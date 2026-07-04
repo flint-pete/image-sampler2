@@ -14,6 +14,22 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Analysis Sections 16 & 17 (design in progress): shared cache for cross-plugin
+  triggers (mode #3) + Planned Enhancements. #3 = continuous ring cache is a
+  SHARED buffer other plugins read (e.g. audio lightning trigger uploads the ~10s
+  of pre-event frames; remote wildfire alert pulls a matching-moment view). LOCKED:
+  uniqueness via a stable user-supplied --cache-name (required with --continuous,
+  fs-safe, validated) -> <SHARED_ROOT>/<cache-name>/<camera>/; consumers use
+  convention for now. Documented ring<->trigger behavior (2C): size cache >=
+  longest trigger lookback; concurrent read+evict is POSIX-safe (open fd survives
+  unlink; atomic writes; consumers tolerate ENOENT/TOCTOU); eviction keeps the
+  most-recent window. ON-NODE FINDINGS (H00F + edge-scheduler 0.28.0 source):
+  CONFIRMED a host-backed, restart-persistent, cross-pod shared mount exists —
+  every plugin auto-gets hostPath /media/plugin-data/uploads/<JOB>/<NAME>/<TAG> ->
+  /run/waggle/uploads (rw, on 937G NVMe, per-instance); user volumes also exist
+  but need a nodeSelector. Open: cache home A (under uploads, needs upload-agent
+  scoping check) vs B (dedicated subtree; leaning B); cross-user read perms. Sec 17
+  defers the discovery/announcement mechanism (2B option ii) to post-testing.
 - Analysis Section 15 (design in progress): continuous-mode local cache / ring
   buffer. --continuous writes to a local --cache-dir (renamed from --out-dir),
   bounded as a ring buffer. LOCKED decisions: --cache-dir required with
