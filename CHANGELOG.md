@@ -14,6 +14,19 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Analysis: Q0 RESOLVED + --from-cache source (LOCKED). --continuous is STRICTLY
+  LOCAL-ONLY (never uploads); the cache is its sole sink and uploading is a
+  consumer concern. This unlocks the producer/consumer architecture: image-sampler2
+  (CPU) fills the shared cache continuously; consumer plugins load a model ONCE,
+  batch-infer N cached images, upload the interesting ones, unload, and free the
+  GPU (BioClip amortization ~11.4s/img -> ~2.04s/img at N=10, GPU freed after) —
+  fixing the single-GPU contention trap. Periodic-snapshot case solved by
+  COMPOSITION, not an upload flag: a second SES-cron one-shot job with the new
+  --one-shot --from-cache <dir> uploads the NEWEST cached image via the existing
+  one-shot upload path (no new upload logic, no camera hit). --from-cache is a
+  one-shot-only option (fail-fast if combined with --continuous or empty cache).
+  Section 17.2 defers time-window selectors (--closest-before/after-timestamp) for
+  cloud-side "pull the cached image nearest time T" use.
 - Analysis Sections 16 & 17 (design in progress): shared cache for cross-plugin
   triggers (mode #3) + Planned Enhancements. #3 = continuous ring cache is a
   SHARED buffer other plugins read (e.g. audio lightning trigger uploads the ~10s

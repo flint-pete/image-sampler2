@@ -1161,10 +1161,62 @@ EXIF/NAMING FOR CACHE FILES:
   self-description. capture_timestamp is always the node clock (Section 13);
   upload_timestamp is N/A for cache-only files.
 
-OPEN — Q0 (to resolve next): does --continuous ALSO upload to the cloud, or is it
-STRICTLY LOCAL-ONLY (cache is the sole sink)? This determines whether cache files
-also produce upload/event-log records and carry upload_timestamp, or are purely
-local scratch. Pending Pete.
+Q0 RESOLVED (Pete, 2026-07-04): --continuous is STRICTLY LOCAL-ONLY — it NEVER
+uploads. The cache is its sole sink. Uploading is a CONSUMER concern, never the
+producer's.
+
+RATIONALE — the producer/consumer architecture this unlocks (the real prize):
+  Decouple ACQUISITION (cheap, CPU, continuous) from INFERENCE/UPLOAD (expensive,
+  GPU/network, bursty). image-sampler2 --continuous fills the shared cache on the
+  CPU; separate CONSUMER plugins wake on their own schedule, read the cache, act,
+  and upload only what matters.
+  This fixes the single-GPU contention trap (skill ref
+  scheduling-continuous-vs-oneshot-and-gpu-contention): instead of a GPU model
+  plugin HOLDING the GPU continuously to sample the camera itself, a consumer
+  loads the model ONCE, BATCH-infers N cached images, uploads the interesting
+  ones, unloads, and FREES the GPU.
+  Amortization (BioClip, load ~10.4 s, inference ~1 s/img):
+    - load->infer->exit per image: 10.4 + 1 = 11.4 s/img, GPU held throughout,
+      ~5 img/min ceiling.
+    - batched N=10: 10.4 + 10*1 = 20.4 s for 10 = ~2.04 s/img amortized, GPU held
+      20.4 s then FREED (~5.6x throughput, GPU idle/shareable the rest of the
+      window).
+  Net: YOLO / BioClip / BirdNet no longer need to hog the GPU; each loads, drains
+  the cache, unloads. image-sampler2 (CPU) is the shared producer feeding them.
+  Keeping --continuous a PURE PRODUCER (no upload) is what makes this composable.
+
+CONSEQUENCES for cache files (local-only):
+  - No "upload" event-log record is produced by --continuous; upload_timestamp is
+    N/A for cache files (Section 15 note confirmed).
+  - Cache files still carry our EXIF (Section 12) and the v2 name (Section 13) so
+    they are self-describing and time-ordered for consumers.
+  - Whoever uploads (a consumer) produces the upload record at upload time.
+
+THE PERIODIC-SNAPSHOT CASE (solved by composition, not by an upload flag):
+  Decision (Pete, 2026-07-04): to save one sampled image to the cloud every ~N
+  minutes, do NOT add upload behavior to --continuous. Instead COMPOSE two jobs:
+    (a) image-sampler2 --continuous <sec> --cache-dir ... --cache-name ...
+        (CPU producer, fills the ring)
+    (b) image-sampler2 --one-shot --from-cache <dir>
+        scheduled by SES cronjob('*/30 * * * *'): takes the NEWEST cached image
+        and uploads it — reusing the EXISTING one-shot upload path (no new upload
+        logic). No camera hit.
+  This keeps every mode single-purpose AND builds the exact cache-consumer muscle
+  the batched-GPU plugins need, so (b) is a reference implementation, not overhead.
+  Ship a ready-to-copy job PAIR so the simple case is turnkey.
+
+NEW SOURCE FLAG — --from-cache (LOCKED, orthogonal to mode):
+  The image SOURCE becomes selectable, independent of the one-shot/continuous mode:
+    --one-shot                    : grab from camera, upload (today's behavior).
+    --one-shot --from-cache <dir> : take the NEWEST image from the cache dir and
+                                    upload it; do NOT touch the camera.
+  - v1 selection = NEWEST cached image only (simplest; serves the periodic-snapshot
+    case). Richer time-window selection is deferred (Section 17.2).
+  - --from-cache is independently useful: re-upload, backfill, and testing without
+    a camera. It is the SAME "read from cache -> act" pattern consumers use.
+  - Fail-fast: --from-cache with an empty/nonexistent cache dir -> clear error,
+    nonzero exit (one-shot). --from-cache is a --one-shot option; combining it with
+    --continuous is a fail-fast error (continuous is a producer, not a consumer).
 
 
 ───────────────────────────────
@@ -1295,8 +1347,8 @@ OPEN ITEMS for Section 16:
   - Resolve cache home (A vs B) after confirming upload-agent scoping + shared-
     mount provisioning.
   - Confirm cross-user read permissions on written cache files.
-  - Q0 (from Section 15) still gates whether triggered uploads reuse the sampler's
-    upload path or are done by the consumer.
+  - Q0 RESOLVED (Section 15): --continuous is local-only; triggered uploads are
+    done by the CONSUMER, which produces the upload record at upload time.
 
 
 ───────────────────────────────
@@ -1320,6 +1372,21 @@ testing. Do NOT implement these before the base is solid.
   enumerate "what image caches exist here and what are they" without hard-coding.
   Why deferred: convention is sufficient for first working version; announcement
   adds a discovery contract we should design once the cache mechanics are proven.
+
+17.2  --from-cache time-window selection  (deferred; v1 is "newest" only)
+  The initial --from-cache (Section 15) selects only the NEWEST cached image.
+  Add timestamp-based selectors so a caller (especially cloud-side code) can pull
+  the cached image matching a particular moment:
+    --closest-before-timestamp <ns>  : newest cached image with capture_ts <= T.
+    --closest-after-timestamp  <ns>  : oldest cached image with capture_ts >= T.
+  Use case: from the cloud, a process wants "any cached image at/around time T"
+  (e.g. a remote wildfire/lightning event at instant T -> pull this node's nearest
+  cached frame for another view). Selection uses the capture-ts PREFIX in the v2
+  filename (authoritative order, no stat), so it composes with the ring naming.
+  Corner cases to specify when built: no image satisfies the bound (fail-fast,
+  clear message); ties; and the file being evicted between select and upload
+  (ENOENT -> treat as "gone", per Section 16 TOCTOU rule). Kept out of v1 to keep
+  one-shot simple; "newest" covers the periodic-snapshot case.
 
 
 
