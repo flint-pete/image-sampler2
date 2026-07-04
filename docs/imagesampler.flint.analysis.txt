@@ -145,7 +145,7 @@ The capture() function branches on --out-dir:
 - Cloud publish (out_dir empty): always writes to a fixed local filename
   sample.jpg, then plugin.upload_file("sample.jpg", meta={"camera": name}).
   Every stream/process overwrites the same sample.jpg in the CWD before
-  uploading — see pitfalls.
+  uploading — see Section 4 (Shortcomings), the shared sample.jpg race.
 - Local save (out_dir set): does NOT upload. Builds a UTC-partitioned path from
   the frame timestamp:
       OUTDIR/<stream>/YYYY/MM/DD/HH/YYYY-MM-DDTHH:MM:SS±zzzz.jpg
@@ -155,6 +155,17 @@ The capture() function branches on --out-dir:
 So: it's one or the other — you CANNOT both upload to the cloud and keep a local
 copy in a single run. Every capture that reaches capture() is saved/published
 unconditionally; there is no content gate.
+
+image-sampler2 RESOLUTION (how the upstream save pitfalls are fixed):
+  - The shared sample.jpg race (Section 4) is DESIGNED OUT three ways: (1) per-
+    stream v2 filenames <ts>-v2-<vsn>-<camera>.jpg (Section 13) — no shared
+    sample.jpg to clobber; (2) per-stream cache subdirs <cache-dir>/<camera>/
+    (Section 15) — each stream writes its own directory; (3) atomic temp->fsync->
+    os.replace on write (Section 15) — no torn file and no read-before-upload race
+    on a shared name. So a stream can never upload another stream's frame.
+  - Upload-vs-local mutual exclusivity is replaced by the mode split: --one-shot
+    uploads (from camera or, via --from-cache, from the ring), --continuous keeps
+    a local ring (Sections 2b, 15, and Q0 in Section 15).
 
 
 ───────────────────────────────

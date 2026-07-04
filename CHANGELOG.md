@@ -13,6 +13,15 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Fixed
+- Analysis Section 3: corrected a dangling "see pitfalls" cross-reference (no such
+  section ever existed) to point at Section 4 (Shortcomings), the shared sample.jpg
+  race. Added an image-sampler2 RESOLUTION note documenting that the upstream save
+  pitfalls are already designed out: the sample.jpg race is eliminated by per-stream
+  v2 filenames (Sec 13) + per-stream cache subdirs (Sec 15) + atomic temp->rename
+  (Sec 15), and the upload-vs-local mutual exclusivity is replaced by the one-shot/
+  continuous mode split (Sec 2b/15).
+
 ### Added
 - Analysis: Q0 RESOLVED + --from-cache source (LOCKED). --continuous is STRICTLY
   LOCAL-ONLY (never uploads); the cache is its sole sink and uploading is a
