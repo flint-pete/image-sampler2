@@ -1061,4 +1061,111 @@ the detection lookback IF the inference plugins later switch to capture-time
 stamping too.
 
 
+───────────────────────────────
+15. CONTINUOUS-MODE LOCAL CACHE (RING BUFFER)  (design in progress)
+───────────────────────────────
+DECISION (Pete, 2026-07-03): the two modes have DIFFERENT sinks.
+  --one-shot   : upload + publish to the cloud (classic image-sampler behavior;
+                 the upload/event-log/linking design of Sections 7, 9, 12, 13
+                 applies here).
+  --continuous : write to a LOCAL directory managed as a bounded RING BUFFER;
+                 evict the oldest as new ones arrive so storage never grows
+                 without bound.
+  (Q0 — whether --continuous ALSO uploads, or is strictly local-only — is still
+  open; see the end of this section. Everything below is independent of Q0 except
+  where noted.)
+
+FLAG: --cache-dir (renamed from upstream --out-dir).
+  - REQUIRED with --continuous. --continuous without --cache-dir -> fail-fast.
+  - Meaningless with --one-shot (which uploads). --cache-dir OR the cache-max-*
+    flags passed WITH --one-shot -> fail-fast error.
+  - Must be an existing, writable directory at startup -> else fail-fast.
+
+BOUNDING THE RING (Q1 LOCKED): two independent caps, evict-on-EITHER.
+  --cache-max-count N   max number of images in the ring
+  --cache-max-mb    M   max total megabytes (decimal MB, 10^6) of ring images
+  - BOTH may be set; eviction triggers when EITHER would be exceeded.
+  - At least ONE must be set with --continuous (else growth is unbounded — the
+    very thing we prevent) -> fail-fast if neither given.
+  - "size" = total bytes of the MANAGED image set (files matching our v2 name
+    pattern) in the per-stream ring; .tmp files and unknown files are not counted.
+
+PER-STREAM RINGS (E4 LOCKED: option a).
+  Each --stream is its own process (Section 1). To avoid cross-process ring races
+  on a shared dir, each stream gets its OWN SUBDIRECTORY under --cache-dir:
+      <cache-dir>/<camera>/ ...
+  Each subdir is an INDEPENDENT ring with the given caps applied PER STREAM (the
+  caps are per-stream, not a global total). No shared state, no locks, race-free.
+
+"OLDEST" ORDERING (E1 LOCKED).
+  Evict oldest by the CAPTURE-TIMESTAMP PREFIX in the v2 filename
+  (<node_capture_ts_ns>-v2-<vsn>-<camera>.jpg) — the authoritative order, no stat
+  needed. Files not matching the v2 pattern fall back to mtime ordering; unknown
+  files are left untouched and uncounted.
+
+STATELESS MANAGEMENT (E6 LOCKED).
+  No in-memory ring state is authoritative. On every capture the algorithm SCANS
+  the per-stream subdir, computes the current situation, and decides. Crash/restart
+  simply re-scans and continues. (An in-memory index may be added later ONLY if
+  profiling shows the per-tick listing is too slow; it must be rebuilt from disk
+  at startup, never trusted across a crash.)
+
+STARTUP ADOPTION (E5 LOCKED).
+  Files already in the per-stream subdir that MATCH the v2 name pattern are adopted
+  into the ring (counted, sized, eligible for eviction). Files that do NOT match
+  are left alone and NOT counted. The cache is never wiped at startup.
+
+PER-CAPTURE ALGORITHM (E2 + E7 ordering — EVICT BEFORE the file joins the ring):
+  1. Acquire the image (bounded capture, Section 2b) into memory / a .tmp file so
+     its byte size new_bytes is known. (.tmp is NOT a ring member.)
+  2. SCAN the per-stream subdir -> current_count, current_bytes, oldest-first list
+     (by capture-ts prefix).
+  3. E3 GUARD (oversized new image): if a size cap is set and new_bytes > max_mb
+     even with an empty ring, DROP THE NEW IMAGE with a loud WARNING; delete the
+     .tmp; do not write. (Chosen behavior: keep the cache valid/bounded rather than
+     let one file exceed the cap.)
+  4. EVICT-LOOP: while
+        (current_count + 1  > max_count)  OR
+        (current_bytes + new_bytes > max_bytes):
+       delete the OLDEST ring file; update current_count/current_bytes.
+     (Deletes as many as needed — a single "delete one" is insufficient for a
+     large new image under a size cap.)
+  5. ATOMIC WRITE (E7): fsync the .tmp, then os.replace(.tmp -> final v2 name).
+     The final-named file appears atomically and only NOW joins the ring. Because
+     eviction (step 4) completed BEFORE the rename, the ring never transiently
+     exceeds its caps and no torn .jpg ever exists under the final name.
+  Ordering guarantee (Pete's E2+E7 constraint): eviction strictly precedes the
+  atomic rename that makes the new file a ring member.
+
+FAILURE HANDLING (E8/E9 LOCKED — fail-SOFT for a long-running process):
+  - Eviction delete fails (locked/permission): WARN, continue; the cap may be
+    briefly exceeded; next capture re-scans and retries eviction.
+  - Disk full / write fails: WARN, SKIP this sample (same posture as a skipped
+    capture in Section 2b), keep looping.
+  - None of these crash the --continuous process.
+  (Config errors — missing/!writable cache-dir, no cap set, flags misused across
+  modes — remain fail-FAST at startup per the global preference.)
+
+INTERACTION WITH SECTION 2b (fixed-period loop):
+  Scan+evict+write happen inside the bounded per-tick capture step. Per-stream
+  subdirs keep the directory listing small and cheap, so the ring work does not
+  cause fixed-period overruns. If a ring op is slow, the Section 2b skip logic
+  still keeps the schedule on its grid.
+
+EXIF/NAMING FOR CACHE FILES:
+  Cache images still receive our EXIF (Section 12) so a file copied off the node is
+  self-describing, and use the v2 filename scheme (Section 13) so ordering and
+  per-stream identity are intact. NOTE: if Q0 resolves to "continuous is local
+  only, no upload," the event-log LINKING purpose (Section 9) does not apply to
+  cache files (there is no upload record to find); the EXIF is then purely for
+  self-description. capture_timestamp is always the node clock (Section 13);
+  upload_timestamp is N/A for cache-only files.
+
+OPEN — Q0 (to resolve next): does --continuous ALSO upload to the cloud, or is it
+STRICTLY LOCAL-ONLY (cache is the sole sink)? This determines whether cache files
+also produce upload/event-log records and carry upload_timestamp, or are purely
+local scratch. Pending Pete.
+
+
+
 

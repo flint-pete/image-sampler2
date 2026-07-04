@@ -14,6 +14,18 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Analysis Section 15 (design in progress): continuous-mode local cache / ring
+  buffer. --continuous writes to a local --cache-dir (renamed from --out-dir),
+  bounded as a ring buffer. LOCKED decisions: --cache-dir required with
+  --continuous and rejected with --one-shot (fail-fast); two independent caps
+  --cache-max-count / --cache-max-mb (decimal MB), evict-on-either, at least one
+  required; per-stream subdirs (<cache-dir>/<camera>/) as independent race-free
+  rings; oldest-by-capture-ts-prefix eviction; stateless (scan-each-capture);
+  startup adoption of v2-matching files (never wipe, ignore unknowns); per-capture
+  algorithm evicts BEFORE the atomic temp->rename so the ring never transiently
+  exceeds caps and no torn file joins it; oversized-new-image dropped with warning
+  (keep cache valid); fail-soft on delete/disk-full, fail-fast on config. OPEN:
+  Q0 — whether --continuous also uploads or is strictly local-only.
 - Analysis Section 2b (LOCKED): replace the poorly-named --cronjob flag with two
   descriptive, mutually-exclusive, REQUIRED mode flags — --one-shot (capture once,
   exit; external SES cadence) and --continuous <SECONDS> (run forever on a fixed
