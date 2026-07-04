@@ -650,9 +650,10 @@ to the object store is decided by whether the plugin RE-ENCODES the frame.
     proprietary JSON API  cgi-bin/api.cgi?cmd=Snap   (or RTSP).
 - HANWHA / WISENET:
     SUNAPI CGI still endpoint  /stw-cgi/video.cgi?msubmenu=snapshot&action=view
-    (distinct from RTSP); full ONVIF Profile S/T/G. Professional line — snapshots
-    commonly carry EXIF (make/model/datetime) and OSD/metadata. NOT yet tested
-    on a Sage unit.
+    (distinct from RTSP); full ONVIF Profile S/T/G. TESTED on a Sage unit (W08D
+    bottom camera, 2560x1920): the native snapshot is JFIF-only, NO EXIF/XMP/COM
+    (camera authors none — like the Reolink, unlike the Mobotix). So "professional
+    line" does NOT imply embedded metadata; it is model/config-specific.
 - MOBOTIX (M16, ToDo #3):
     multiple native still endpoints:
       /record/current.jpg          (current image per saved settings)
@@ -675,6 +676,15 @@ to the object store is decided by whether the plugin RE-ENCODES the frame.
   Mobotix W08D (node e335)   imagesampler-mobotix:0.3.7        FULL Mobotix
                              raw native JPEG, NOT re-encoded    M1IMG fingerprint
                                                                 + MXF binary block
+  Hanwha W08D (node e335)    imagesampler-bottom:0.3.7          NONE (JFIF-only
+                             raw native JPEG, NOT re-encoded    header; no EXIF/
+                             (bottom camera, 2560x1920)         XMP/COM). Camera
+                                                                authors none — this
+                                                                is NOT a re-encode
+                                                                strip (same raw-
+                                                                preserving plugin
+                                                                that kept the
+                                                                Mobotix block).
 
 KEY OBSERVATION: the two Mobotix rows are the SAME camera model. The ONLY
 difference is the plugin's acquisition path. The re-encoding plugin (OpenCV/
@@ -735,22 +745,26 @@ so metadata from high-quality cameras is included in the saved image.
      only source, or a camera with no still endpoint). Accept that this path
      yields pixels-only (no camera metadata) and re-encodes; we still add our own
      fields. Clearly label images from this path as re-encoded.
-  4. PRESERVE-IF-PRESENT is NOT a no-op: Mobotix -> full fingerprint; Hanwha ->
-     likely EXIF; Reolink -> nothing (harmless no-op). One defensive code path
-     serves the whole fleet.
-  5. CAPTURE TIME: if the preserved camera block carries a true capture time
-     (Mobotix TIM/TZN/TIT), prefer it as capture_timestamp; else fall back to the
-     node grab-time (Section 8). Always also record upload_timestamp (Section 7).
+  4. PRESERVE-IF-PRESENT is NOT a no-op, but presence is model-specific and
+     unpredictable: Mobotix -> full fingerprint; Hanwha (tested) -> nothing (JFIF
+     only); Reolink -> nothing. 2 of 3 tested cameras author no metadata. One
+     defensive code path serves the whole fleet AND any untested/future camera
+     (e.g. Axis/Hikvision that DO embed EXIF) with no code change — that is the
+     whole point of being vendor-agnostic rather than per-camera special-casing.
+  5. CAPTURE TIME: per Section 13 (LOCKED), capture_timestamp is ALWAYS the NODE
+     Linux clock (time_ns() at grab), NEVER the camera clock — even for Mobotix.
+     The camera's own time (e.g. Mobotix TIM/TZN/TIT) is preserved in the embedded
+     block for reference only. Always also record upload_timestamp (Section 7).
 
 CONSEQUENCE FOR THE PLUGIN ARCHITECTURE: the native-still HTTP fetch (raw bytes)
 becomes a FIRST-CLASS acquisition source in image-sampler2, not an afterthought;
 pywaggle Camera()/OpenCV is demoted to the fallback for stream-only cameras.
 
 OPEN ITEMS:
-  - Verify a Hanwha native snapshot on the fleet actually carries EXIF (marker-
-    scan a raw pull), to confirm the Hanwha row above.
-  - Confirm the exact Reolink/Hanwha native still URLs + auth we will use in the
-    plugin (Reolink cmd=Snap confirmed working with admin creds on H00F).
+  - Hanwha native snapshot RESOLVED: tested (W08D bottom, 2560x1920) — JFIF only,
+    no EXIF. Design is vendor-agnostic so this needs no special handling.
+  - Confirm the exact Reolink/Hanwha/Mobotix native still URLs + auth we will use
+    in the plugin (Reolink cmd=Snap confirmed working with admin creds on H00F).
 
 
 ───────────────────────────────

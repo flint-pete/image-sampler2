@@ -29,6 +29,14 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   preserved). Documents Reolink/Hanwha/Mobotix acquisition interfaces and decodes
   the Mobotix fingerprint (manufacturer, ms capture time+TZ, per-sensor geometry/
   exposure telemetry).
+- Analysis Section 11 update: added Hanwha data point (W08D bottom camera,
+  2560x1920, raw-preserved) — JFIF only, NO EXIF. 2 of 3 tested cameras author no
+  metadata; confirms metadata presence is model-specific/unpredictable, which is
+  exactly why the vendor-agnostic preserve-if-present design is correct (no
+  per-camera special-casing; future EXIF-bearing cameras work with no code
+  change). Corrected the earlier "Hanwha likely carries EXIF" assumption and the
+  capture-time note (capture_timestamp is ALWAYS node clock per Section 13, never
+  camera). Hanwha open item resolved.
 
 ### Changed
 - Design (EXIF field set, Section 12 — LOCKED): Option C hybrid — standard EXIF
