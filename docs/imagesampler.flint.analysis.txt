@@ -31,6 +31,17 @@ publish it to the Sage cloud or write it to local disk.
 - The camera name is attached as meta={"camera": stream_name} on the upload —
   that's the only metadata published.
 
+DESIGN NOTE (image-sampler2 — camera source selection):
+  When choosing HOW to acquire from a given camera, PREFER the method that yields
+  the best metadata in the resulting JPG. Where possible, pull the ORIGINAL
+  ENCODED image from the camera's native still endpoint and save the raw bytes so
+  camera-authored metadata survives (e.g. Mobotix M1IMG fingerprint; some cameras
+  embed EXIF). Avoid acquisition paths that decode+re-encode the frame (OpenCV/
+  libav via pywaggle Camera()), which strip all camera metadata. Use the decode/
+  re-encode path only as a fallback for stream-only sources with no still
+  endpoint. See Section 11 (evidence + "don't re-encode" mandate) and Section 12
+  (the metadata we add ourselves).
+
 
 ───────────────────────────────
 2. FREQUENCY OF SAMPLES

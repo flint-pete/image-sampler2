@@ -14,6 +14,11 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Analysis Section 1 design note: camera source selection should prefer the
+  acquisition method that yields the best metadata in the resulting JPG — pull the
+  original encoded image from the camera's native still endpoint and save raw
+  bytes where possible; avoid decode+re-encode paths (which strip camera
+  metadata); cross-references Sections 11 and 12.
 - Analysis Section 9: what a downloaded JPG reveals (cv2.imwrite embeds no EXIF),
   the object-store URL structure, the verified filename->event-log reverse-lookup
   recipe, and the ns-as-key uniqueness problem.
