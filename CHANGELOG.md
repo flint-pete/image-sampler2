@@ -38,6 +38,19 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   capture-time note (capture_timestamp is ALWAYS node clock per Section 13, never
   camera). Hanwha open item resolved.
 
+- Analysis Section 14: OPEN Q2 RESOLVED. (Check 1) Data-service honors
+  client-supplied timestamps — across 18,873 fleet upload records the API record
+  timestamp equals the supplied ns prefix 100% (gap <1ms), and genuinely
+  back-dated file-forager records (~5.5h behind source; oldest 23.7h back) are
+  stored and retrievable at their back-dated time. So a capture-time record
+  timestamp is safe at the data layer. (Check 2) slack-hummingbird watcher uses a
+  FIXED 120s relative lookback (safe pattern, not a max-ts cursor), so it won't
+  permanently drop back-dated records; the image-sampler2 capture-time switch
+  affects image-upload records (already tolerated via the 240s deferred image
+  queue), not the near-real-time detection records the watcher polls. Follow-up
+  only if inference plugins later adopt capture-time: widen detection lookback to
+  >=300s. Section 13 production prerequisite CLEARED for image-sampler2.
+
 ### Changed
 - Design (EXIF field set, Section 12 — LOCKED): Option C hybrid — standard EXIF
   tags where a real one fits (Model=vsn, Software=plugin+version, DateTimeOriginal

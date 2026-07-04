@@ -913,3 +913,65 @@ PREREQUISITE BEFORE ENABLING IN PRODUCTION:
   records.
 
 
+───────────────────────────────
+14. OPEN Q2 RESOLVED: BACK-DATED TIMESTAMP HANDLING + WATCHER AUDIT
+───────────────────────────────
+Two checks run 2026-07-03 to clear the Section 13 production prerequisite.
+
+CHECK 1 — DATA-SERVICE HONORS CLIENT-SUPPLIED (BACK-DATED) TIMESTAMPS: CONFIRMED.
+  Method (zero-write, using data already in the archive):
+  (a) Across 18,873 fleet upload records in 24h, the API record 'timestamp'
+      EQUALS the ns prefix in the object name (the client-supplied upload_file
+      timestamp) for 100.0% of records (gap < 1 ms; max gap 0.000 s). => the
+      data-service stores + indexes by the SUPPLIED timestamp, NOT by its own
+      ingest wall-clock.
+  (b) Genuine back-dating exists and is queryable: file-forager (W096) uploads
+      ~5.5 h AFTER the source data time (e.g. source 06:30 -> record 12:05,
+      source 13:30 -> record 19:05). The oldest such record (record time 23.7 h
+      before "now") was RETRIEVED by a +-2 s window query centered on its OLD
+      record time. => a record stamped hours in the past is accepted, stored,
+      and retrievable at its back-dated time; no ingest-time clamp or rejection
+      observed.
+  CONCLUSION: switching image-sampler2 to a capture-time record timestamp is safe
+  at the data-service layer. Records will be stored and queryable at capture time.
+  (Not tested: an explicit ingest ACK-rejection bound for extreme ages; none seen
+  in practice up to ~24 h back. A controlled write test (1C) remains available if
+  we ever need to probe far-past/future limits.)
+
+CHECK 2 — SLACK-HUMMINGBIRD WATCHER POLL/DEDUP AUDIT: SAFE PATTERN, ONE CAVEAT.
+  File: ~/AI-projects/slack-hummingbird/hummingbird-watcher.py
+  - Poll window (line ~497): lookback = f"-{max(interval*2,120)}s" — a FIXED
+    RELATIVE window (default 120 s) re-queried each cycle. It does NOT advance a
+    cursor by max(record-ts seen), so it will NOT permanently lose a back-dated
+    record the way a cursor-based poller would. This is the safe pattern.
+  - Dedup (lines ~506, ~553): by record timestamp (ts != last_notified_ts). Fine
+    for the capture-time switch (each capture has a distinct ns).
+  CAVEAT (danger #2 confirmed against real code): the watcher polls DETECTION
+  records (env.count.bird etc.) by record timestamp within the last 120 s. IF the
+  producing plugin stamps at capture time AND capture->upload lag exceeds ~120 s
+  (batch-and-hold, or the known ~2 min cross-country object-store lag), the record
+  becomes queryable only AFTER its capture-time already fell out of the 120 s
+  window -> the watcher misses it.
+  IMPORTANT SCOPING: this watcher polls the INFERENCE plugins' detection records
+  (yolo/bioclip/birdnet), which publish near-real-time (low lag). image-sampler2's
+  capture-time switch affects the IMAGE upload records, not those detection
+  records. The image fetch already tolerates lag via the deferred image queue
+  (retries to a 240 s deadline). So the capture-time switch on IMAGES does not by
+  itself break the watcher.
+  FIX IF/WHEN detection plugins also adopt capture-time stamping:
+    (a) widen the detection lookback to comfortably exceed worst-case
+        capture->upload lag (>= 300 s, since ~2 min store lag is real), OR
+    (b) key the detection poll on an ingest/wall-clock field rather than capture
+        time, OR
+    (c) poll by the new upload_timestamp meta field.
+  Not required for the image-sampler2 change alone; flagged for the broader
+  capture-time rollout.
+
+NET: Section 13's production prerequisite is CLEARED for image-sampler2. The
+data-service handles back-dated timestamps correctly, and the watcher's fixed-
+window poll is safe for the image-upload change. The only follow-up is to widen
+the detection lookback IF the inference plugins later switch to capture-time
+stamping too.
+
+
+
