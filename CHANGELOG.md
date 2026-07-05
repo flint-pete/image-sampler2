@@ -14,6 +14,19 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Changed
+- Analysis doc 2.10 (+ 2.1/2.7): clarified that the FULL v2 name INCLUDING the
+  capture-timestamp prefix (<capture_ts_ns>-v2-<vsn>-<camera>.jpg) is applied AT
+  CAPTURE TIME, identically in both paths — it is NOT added only at upload. The
+  continuous/cache path: the sampler builds the full name itself and writes that
+  exact filename into the ring, so cache files on disk already carry the capture-ts
+  prefix (which is what makes 2.6 oldest-by-capture-ts eviction and 2.8/5.2
+  --from-cache selection work off the filename). The one-shot/upload path: the
+  sampler owns the basename and passes timestamp=capture_ts to pywaggle, which
+  prepends the same prefix, producing the identical object name. Result: a cached
+  file and a one-shot-uploaded file share the same naming structure and capture-ts
+  prefix; a --from-cache upload preserves the cached file's original name end to
+  end. Replaces the old upload-centric "pywaggle owns the prefix" framing that left
+  the cache-file naming implicit.
 - Analysis doc: clarified the end-to-end logic/flow of the two modes. Added a
   MODE-AND-FLOW OVERVIEW to 2.1 laying out the full decision tree for all three
   invocations: (1) --one-shot = grab one camera frame, queue for upload, exit

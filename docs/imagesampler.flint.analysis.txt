@@ -326,9 +326,11 @@ MODE-AND-FLOW OVERVIEW (the whole decision tree in one place)  [LOCKED]
   There are three total invocations; each has a single, unambiguous data flow:
 
   (1) --one-shot                      "get a sample NOW" (from the camera)
-        FLOW: acquire ONE frame from the camera -> embed our EXIF (2.11) under the
-        v2 name (2.10) -> QUEUE it for cloud upload (pywaggle stages it into the
-        host-backed uploads mount) -> exit 0.
+        FLOW: acquire ONE frame from the camera -> embed our EXIF (2.11) and name
+        it <capture_ts_ns>-v2-<vsn>-<camera>.jpg (the same capture-time v2 name the
+        cache uses, 2.10) -> QUEUE it for cloud upload (pywaggle stages it into the
+        host-backed uploads mount, fed timestamp=capture_ts so the object name
+        matches) -> exit 0.
         DOES NOT write to --cache-dir (that flag is REJECTED in one-shot, 2.6).
         The staged local file is EPHEMERAL: it lives only in the pod's upload
         staging area; the async WES upload-agent completes the upload even after
@@ -338,17 +340,21 @@ MODE-AND-FLOW OVERVIEW (the whole decision tree in one place)  [LOCKED]
 
   (2) --one-shot --from-cache <dir>   upload the NEWEST already-cached image
         FLOW: read the NEWEST image already in <dir> (put there by a --continuous
-        producer) -> upload it via the SAME one-shot upload path -> exit 0.
-        Does NOT touch the camera; does NOT write a new image; does NOT evict.
-        v1 selects NEWEST only; time-window selectors (--closest-before/after-
-        timestamp) are a DEFERRED enhancement (5.2). This is the composable
-        "periodic uploader" half of the producer/consumer pattern (2.8).
+        producer, already carrying its capture-ts v2 name) -> upload it via the
+        SAME one-shot upload path, preserving that original capture-ts name end to
+        end (2.10) -> exit 0. Does NOT touch the camera; does NOT write a new
+        image; does NOT evict. v1 selects NEWEST only; time-window selectors
+        (--closest-before/after-timestamp) are a DEFERRED enhancement (5.2). This
+        is the composable "periodic uploader" half of the producer/consumer
+        pattern (2.8).
 
   (3) --continuous <SECONDS> --cache-dir <dir> --cache-name <name> [caps]
-        FLOW: on a fixed-period grid (2.2), acquire a frame -> embed EXIF ->
-        atomically write it into the per-stream ring under <dir> (2.6) -> evict
-        oldest as needed -> loop forever. NEVER uploads (local-only, 2.8). This is
-        the PRODUCER that fills the shared cache for consumers (2.12).
+        FLOW: on a fixed-period grid (2.2), acquire a frame -> embed EXIF -> build
+        the FULL name <capture_ts_ns>-v2-<vsn>-<camera>.jpg ITSELF and atomically
+        write that exact filename into the per-stream ring under <dir> (2.6, 2.10)
+        -> evict oldest as needed -> loop forever. NEVER uploads (local-only, 2.8).
+        This is the PRODUCER that fills the shared cache for consumers (2.12). The
+        on-disk name is identical in structure to what one-shot would upload.
 
   In short: --one-shot always UPLOADS and never caches; --continuous always CACHES
   and never uploads. --from-cache is the bridge that lets a one-shot uploader
@@ -534,10 +540,13 @@ slow, the 2.2 skip logic keeps the schedule on its grid.
 2.7  EXIF/NAMING FOR CACHE FILES  [LOCKED]
 ───────────────────────────────
 Cache images still receive our EXIF (2.11) so a file copied off the node is
-self-describing, and use the v2 filename scheme (2.10) so ordering + per-stream
-identity are intact. Since --continuous is local-only (2.8), the event-log
-LINKING purpose (1.9) does not apply to cache files (no upload record to find);
-the EXIF is purely for self-description. capture_timestamp is the node clock
+self-describing, and use the FULL v2 filename scheme WITH the capture-ts prefix —
+<capture_ts_ns>-v2-<vsn>-<camera>.jpg, written by the sampler itself at capture
+(2.10) — so the on-disk cache name is identical in structure to what --one-shot
+would upload, and ordering + per-stream identity are intact. Since --continuous is
+local-only (2.8), the event-log LINKING purpose (1.9) does not apply to cache
+files (no upload record to find); the EXIF is purely for self-description.
+capture_timestamp is the node clock
 (2.9); upload_timestamp is N/A for cache-only files (a CONSUMER that later
 uploads produces the upload record + upload_timestamp at that time).
 
@@ -592,10 +601,37 @@ tolerates this (confirmed).
 ───────────────────────────────
 2.10  v2 FILENAME SCHEME  [LOCKED]
 ───────────────────────────────
-pywaggle owns the "{timestamp}-" prefix; we own the rest (Path(path).name).
-  Saved basename (FILENAME) = v2-<vsn>-<camera>.jpg
-  Full object name          = <node_capture_ts_ns>-v2-<vsn>-<camera>.jpg
-  Example                   = 1783112408323875000-v2-H00F-top.jpg
+THE FULL v2 NAME IS APPLIED AT CAPTURE TIME, IDENTICALLY IN BOTH PATHS.
+The complete name — including the capture-timestamp prefix — is a property of the
+image the moment it is captured, NOT something added only at upload. Both the
+cache path and the upload path produce the exact same name structure:
+
+  Full name = <node_capture_ts_ns>-v2-<vsn>-<camera>.jpg
+  Example   = 1783112408323875000-v2-H00F-top.jpg
+       node ns capture ─┘   │   │     └ camera / stream name
+                            │   └ vsn  (cross-node disambiguation; self-identifies)
+                            └ v2  (convention marker: prefix = CAPTURE time)
+
+  - CONTINUOUS / CACHE path (2.6): the sampler BUILDS THE FULL NAME ITSELF —
+    <capture_ts_ns>-v2-<vsn>-<camera>.jpg — and writes that exact filename into the
+    per-stream ring under --cache-dir (via the atomic temp->rename, 2.6). pywaggle
+    is NOT involved; the on-disk cache file already carries the capture-ts prefix.
+    This is what makes the ring's oldest-by-capture-ts eviction (2.6) and the
+    --from-cache capture-ts selection (2.8, 5.2) work directly off the filename.
+  - ONE-SHOT / UPLOAD path (2.2/2.8): the sampler owns the basename
+    v2-<vsn>-<camera>.jpg and passes timestamp=capture_ts to pywaggle
+    upload_file(). pywaggle's convention is to prepend "{timestamp}-" to the
+    basename, so it reproduces the IDENTICAL full name
+    <capture_ts_ns>-v2-<vsn>-<camera>.jpg in the object store. (Because we hand it
+    the CAPTURE timestamp, not letting it default to upload time, 2.9.)
+
+So a file uploaded by one-shot and a file sitting in the cache follow the SAME
+naming structure and the SAME capture-time prefix. A --from-cache upload of a
+cached file therefore keeps that file's original capture-ts name end to end (the
+cached name already is the object name). The only mechanical difference is WHO
+writes the prefix: the sampler directly for the cache, pywaggle (fed the same
+capture timestamp) for a fresh one-shot upload — the RESULT is identical.
+
 Why each element (ties to 1.9 collisions):
   - v2     : marks the machinery change (capture-time prefix, EXIF embed, raw-bytes
              acquisition) so old (send-time) and new (capture-time) names are never
