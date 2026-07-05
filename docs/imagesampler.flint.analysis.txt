@@ -3,10 +3,10 @@ IMAGE-SAMPLER2 — DESIGN & UPSTREAM ANALYSIS
 ═══════════════════════════════════════════════
 
 Purpose of this document
-  A complete, reconciled record of (I) what the upstream Sage/Waggle imagesampler
-  actually does and where it falls short, and (II) the LOCKED design for its
-  enhanced fork "image-sampler2", plus (III) requirements carried forward,
-  (IV) genuinely open questions, and (V) deferred enhancements.
+  A complete, reconciled record of (1) what the upstream Sage/Waggle imagesampler
+  actually does and where it falls short, and (2) the LOCKED design for its
+  enhanced fork "image-sampler2", plus (3) requirements carried forward,
+  (4) genuinely open questions, and (5) deferred enhancements.
 
   This is a clean end-to-end rewrite of the earlier iterative analysis. Earlier
   drafts mixed "upstream code study" with "future ideas," several of which were
