@@ -14,6 +14,9 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Changed
+- Analysis doc: renumbered all sections and cross-references from Roman to Arabic
+  numerals (PART I->PART 1, II.6->2.6, IV.5->4.5, etc.) so sub-references read as
+  3.1 / 4.2 instead of III.1 / IV.2. Content unchanged.
 - Analysis doc: complete end-to-end scrub and reorganization (1405 -> 812 lines,
   no loss of verified findings or locked decisions). Restructured into 5 status-
   tagged parts with a legend ([LOCKED]/[VERIFIED]/[REQUIREMENT]/[OPEN]/[DEFERRED]):
