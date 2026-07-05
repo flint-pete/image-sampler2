@@ -14,6 +14,17 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Changed
+- Analysis doc 3.2 (heartbeat/liveness): sharpened and split by mode. Corrected the
+  old "every cycle" wording (which would flood the data plane at up-to-1 Hz in
+  continuous mode). --one-shot: emit plugin.duration.* for the single run (upload
+  record is the primary liveness signal). --continuous (local-only cache producer):
+  a PERIODIC CACHE HEARTBEAT ~once a minute (configurable --heartbeat-secs,
+  decoupled from the sample interval), NOT per cycle, carrying simple cache stats —
+  total image count and total bytes in --cache-dir (optionally images written/
+  evicted since last, last capture status, cache-name+camera). It is the sole
+  liveness signal in continuous mode and fires even when captures are skipped/
+  failed. Documented that plugin.duration.* does NOT apply in continuous mode
+  (no discrete run to time; per-capture timing would be noise).
 - Analysis doc 2.10 (+ 2.1/2.7): clarified that the FULL v2 name INCLUDING the
   capture-timestamp prefix (<capture_ts_ns>-v2-<vsn>-<camera>.jpg) is applied AT
   CAPTURE TIME, identically in both paths — it is NOT added only at upload. The

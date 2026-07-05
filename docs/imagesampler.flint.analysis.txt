@@ -765,12 +765,42 @@ Still-valid upstream fixes, now REQUIREMENTS of image-sampler2 (not "ideas").
   dir). In --one-shot a capture error is a clean nonzero exit (fail-fast is fine).
 
 3.2  HEARTBEAT / LIVENESS  [REQUIREMENT]
-  Publish a periodic liveness signal every cycle (even on a skipped/failed
-  capture) so "running but silent" (dark camera) is distinguishable from a crash
-  in the data plane. Optionally plugin.duration.* phase timing (grab + save/
-  inject). NOTE: --continuous is local-only (2.8) and may run where no upload
-  record is produced; the heartbeat is the liveness signal in that case. Keep
-  plugin.duration.* in NANOSECONDS to match the fleet convention (ToDo #21).
+  Liveness must let the data plane distinguish "running but producing no upload"
+  from "crashed." The mechanism DIFFERS by mode, because the two modes have very
+  different output rates and purposes:
+
+  --one-shot (uploads):  emit plugin.duration.* phase timing for the single
+    capture (e.g. grab + save/inject, and the upload stage). The upload record
+    itself is the primary liveness signal; plugin.duration.* adds per-run timing.
+    Keep plugin.duration.* in NANOSECONDS to match the fleet convention (ToDo #21).
+    (One-shot is short-lived and externally scheduled, so no periodic heartbeat is
+    needed — each run either uploads + emits its duration, or exits nonzero.)
+
+  --continuous (local-only cache producer):  a PERIODIC CACHE HEARTBEAT, NOT a
+    per-cycle event. The continuous loop can fire every second, so publishing a
+    liveness event per capture would flood the data plane. Instead publish ONE
+    heartbeat event ROUGHLY ONCE A MINUTE (decoupled from the sample interval)
+    summarizing the cache state. It is the sole liveness signal in this mode
+    (continuous never uploads, so there is no upload record to imply "alive").
+      CADENCE: a fixed heartbeat interval, default ~60 s, configurable via
+        --heartbeat-secs (independent of --continuous <SECONDS>). Emit on a
+        monotonic grid like the capture loop (2.2); if the sample interval is
+        longer than the heartbeat interval, emit at most one heartbeat per sample
+        (never more often than there is news). The heartbeat fires even if recent
+        captures were skipped/failed — that is exactly the "running but silent"
+        case it exists to reveal.
+      PAYLOAD (simple cache stats, per cache-name / per stream as applicable):
+        - total number of images currently in the --cache-dir (the managed v2 set)
+        - total disk space used by those cache images (bytes)
+        Optional, cheap-to-add: images written since the last heartbeat, images
+        evicted since the last heartbeat, last capture status (ok/skip/fail), and
+        the cache-name + camera so multi-stream/multi-config nodes disaggregate.
+      TOPIC: publish under a clear namespace, e.g. env.imagesampler.cache.count and
+        env.imagesampler.cache.bytes (final topic names TBD at implementation; keep
+        them distinct from any plugin.* reserved/standard names).
+    plugin.duration.* does NOT apply in --continuous mode: there is no discrete
+    "run" to time, and per-capture timing at up-to-1 Hz would be noise. The cache
+    heartbeat replaces it as the liveness + progress signal.
 
 3.3  CLEAN SELF-EXIT: --max-count / --max-runtime  [REQUIREMENT]
   Provide bounded self-exit for windowed scheduling friendliness (default 0 =
