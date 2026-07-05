@@ -321,6 +321,42 @@ Why this is the design (the real prize):
 This decision drives 2.2 (modes), 2.8 (Q0 = continuous is local-only), and
 2.12 (shared cross-plugin cache).
 
+MODE-AND-FLOW OVERVIEW (the whole decision tree in one place)  [LOCKED]
+  image-sampler2 runs in exactly ONE of two required, mutually-exclusive modes.
+  There are three total invocations; each has a single, unambiguous data flow:
+
+  (1) --one-shot                      "get a sample NOW" (from the camera)
+        FLOW: acquire ONE frame from the camera -> embed our EXIF (2.11) under the
+        v2 name (2.10) -> QUEUE it for cloud upload (pywaggle stages it into the
+        host-backed uploads mount) -> exit 0.
+        DOES NOT write to --cache-dir (that flag is REJECTED in one-shot, 2.6).
+        The staged local file is EPHEMERAL: it lives only in the pod's upload
+        staging area; the async WES upload-agent completes the upload even after
+        the pod exits (staging is host-backed, 2.12). Nothing persists in a cache.
+        Cadence is EXTERNAL (the SES scheduler relaunches the pod). Best for
+        periodic cloud snapshots and "grab one now."
+
+  (2) --one-shot --from-cache <dir>   upload the NEWEST already-cached image
+        FLOW: read the NEWEST image already in <dir> (put there by a --continuous
+        producer) -> upload it via the SAME one-shot upload path -> exit 0.
+        Does NOT touch the camera; does NOT write a new image; does NOT evict.
+        v1 selects NEWEST only; time-window selectors (--closest-before/after-
+        timestamp) are a DEFERRED enhancement (5.2). This is the composable
+        "periodic uploader" half of the producer/consumer pattern (2.8).
+
+  (3) --continuous <SECONDS> --cache-dir <dir> --cache-name <name> [caps]
+        FLOW: on a fixed-period grid (2.2), acquire a frame -> embed EXIF ->
+        atomically write it into the per-stream ring under <dir> (2.6) -> evict
+        oldest as needed -> loop forever. NEVER uploads (local-only, 2.8). This is
+        the PRODUCER that fills the shared cache for consumers (2.12).
+
+  In short: --one-shot always UPLOADS and never caches; --continuous always CACHES
+  and never uploads. --from-cache is the bridge that lets a one-shot uploader
+  publish what a continuous producer cached. There is no mode that both uploads
+  AND writes a persistent local copy in a single run — that need is met by
+  COMPOSITION (run a producer + a one-shot --from-cache uploader), not by one
+  do-everything invocation (2.8).
+
 ───────────────────────────────
 2.2  MODES: --one-shot / --continuous <SECONDS>  [LOCKED]
 ───────────────────────────────
@@ -335,6 +371,17 @@ Rules (fail-fast): passing BOTH or NEITHER is a parse error; interval <= 0 is a
 parse error; no silent default mode. croniter dependency is dropped. Plugin()
 lifecycle unchanged: --continuous opens Plugin() once for the process life;
 --one-shot opens, captures once, closes.
+
+--one-shot IS UPLOAD-ONLY; IT NEVER WRITES A PERSISTENT LOCAL COPY  [LOCKED]:
+  In --one-shot mode the captured frame is staged for cloud upload and the pod
+  exits; nothing is added to any cache. --cache-dir / --cache-max-* are REJECTED
+  in one-shot (fail-fast, 2.6), so one-shot cannot populate a ring. The local file
+  is EPHEMERAL upload staging only: pywaggle upload_file() places it into the
+  host-backed uploads mount (/run/waggle/uploads, 2.12) and the async WES
+  upload-agent finishes the transfer even after the one-shot pod exits — so the
+  upload is not lost by the immediate exit, and no image lingers in a cache dir.
+  (--one-shot --from-cache is the only way one-shot reads a persisted image, and
+  it READS the cache, never WRITES it — 2.8.)
 
 FIXED-PERIOD SCHEDULING for --continuous (safe + simple, ~12 lines):
   Requirement: fire on a fixed grid t0, t0+N, t0+2N ...; never drift. On OVERRUN
@@ -508,11 +555,14 @@ not an upload flag:
       EXISTING one-shot upload path (no new upload logic, no camera hit).
 Ship a ready-to-copy job PAIR so the simple case is turnkey.
 NEW SOURCE FLAG --from-cache (orthogonal to mode):
-  --one-shot                    : grab from camera, upload (default one-shot).
-  --one-shot --from-cache <dir> : take the NEWEST cache image and upload it; do
-                                  NOT touch the camera.
+  --one-shot                    : grab ONE frame from the camera and upload it,
+                                  then exit ("get a sample now" / periodic cloud
+                                  snapshot). Upload-only; writes no cache (2.2).
+  --one-shot --from-cache <dir> : take the NEWEST image already in the cache and
+                                  upload it; do NOT touch the camera, write, or
+                                  evict.
   - v1 selection = NEWEST only (serves the snapshot case). Time-window selectors
-    are DEFERRED (5.2).
+    (--closest-before/after-timestamp) are DEFERRED (5.2).
   - --from-cache is one-shot-only: combining with --continuous is a fail-fast
     error; empty/nonexistent cache dir is a fail-fast error.
   - It is independently useful (re-upload, backfill, camera-free testing) and is

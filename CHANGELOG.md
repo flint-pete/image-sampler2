@@ -14,6 +14,19 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Changed
+- Analysis doc: clarified the end-to-end logic/flow of the two modes. Added a
+  MODE-AND-FLOW OVERVIEW to 2.1 laying out the full decision tree for all three
+  invocations: (1) --one-shot = grab one camera frame, queue for upload, exit
+  ("get a sample now" / periodic snapshot); (2) --one-shot --from-cache = upload
+  the NEWEST already-cached image (no camera, no write, no evict); (3) --continuous
+  = fixed-period producer that writes the local ring and never uploads. Made
+  explicit (per user question) that --one-shot is UPLOAD-ONLY and never writes a
+  persistent local copy: --cache-dir/--cache-max-* are rejected in one-shot, and
+  the staged file is ephemeral upload staging on the host-backed uploads mount (the
+  async WES upload-agent completes the transfer after the pod exits). Reinforced
+  the "upload always / cache never" vs "cache always / upload never" split and that
+  the upload+persist case is met by composition, not a do-everything invocation.
+  Reiterated that --from-cache time-window selectors remain a deferred enhancement.
 - Analysis doc: renumbered all sections and cross-references from Roman to Arabic
   numerals (PART I->PART 1, II.6->2.6, IV.5->4.5, etc.) so sub-references read as
   3.1 / 4.2 instead of III.1 / IV.2. Content unchanged.
