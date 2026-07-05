@@ -14,6 +14,15 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Changed
+- Analysis doc 2.10: added a "HOW THE CAPTURE-TS SWITCH WORKS" note answering how
+  we move the filename prefix from upload-time to capture-time given that pywaggle
+  assembles the name. Grounded in the current pywaggle source: upload_file() does
+  `timestamp = timestamp or get_timestamp()`, so pywaggle only DEFAULTS the
+  timestamp — passing an explicit timestamp=capture_ts short-circuits the fallback
+  and pywaggle uses our value verbatim for both the filename prefix and the upload
+  record timestamp. The whole switch is one argument; we don't bypass pywaggle's
+  naming. Noted the MIN_TIMESTAMP_NS constraint (ns int >= 2000-01-01) and that the
+  cache path builds the full name itself with no pywaggle call.
 - Analysis doc: final cleanup pass. Removed superseded-draft archaeology now that
   the design is settled — stripped the rejected-alternatives list and "Option C"
   labels from 2.11 (EXIF), the "Opt-4" tag from 2.10, and the internal draft

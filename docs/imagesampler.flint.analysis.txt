@@ -622,6 +622,31 @@ cache path and the upload path produce the exact same name structure:
     <capture_ts_ns>-v2-<vsn>-<camera>.jpg in the object store. (Because we hand it
     the CAPTURE timestamp, not letting it default to upload time, 2.9.)
 
+HOW THE CAPTURE-TS SWITCH WORKS (the whole change is ONE argument):
+  pywaggle does NOT own the timestamp — it only DEFAULTS it. Confirmed in the
+  current pywaggle source (Plugin.upload_file):
+      def upload_file(self, path, meta={}, timestamp=None, keep=False):
+          timestamp = timestamp or get_timestamp()   # <-- the fallback
+          ...
+          dst = f"{timestamp}-{src.name}"             # object-name prefix
+          self.__publish("upload", dst.name, meta, timestamp)  # record ts
+  The `timestamp or get_timestamp()` short-circuit is the hinge:
+    - Pass NOTHING (timestamp=None) and pywaggle falls back to get_timestamp() =
+      time.time_ns() evaluated AT UPLOAD TIME. That is what upstream imagesampler
+      does (1.5), which is why its prefix is upload time.
+    - Pass an EXPLICIT timestamp= and the `or` short-circuits — pywaggle uses OUR
+      value verbatim for BOTH the filename prefix AND the upload record timestamp.
+  So the switch is literally:
+      capture_ts = time.time_ns()          # at the shutter, node clock (2.9)
+      # ...acquire, embed EXIF, basename = v2-<vsn>-<camera>.jpg...
+      plugin.upload_file(path, meta=meta, timestamp=capture_ts)
+  We do NOT bypass or reimplement pywaggle's naming; we just stop letting it pick
+  the timestamp. CONSTRAINT (pywaggle __publish, 1.7): timestamp MUST be an int in
+  NANOSECONDS >= 2000-01-01 (MIN_TIMESTAMP_NS) or it raises — so capture_ts is
+  time.time_ns() (ns int), never seconds.
+  (The cache path has no pywaggle call at all: the sampler builds the full name
+  <capture_ts_ns>-v2-<vsn>-<camera>.jpg itself, above. Same prefix, same result.)
+
 So a file uploaded by one-shot and a file sitting in the cache follow the SAME
 naming structure and the SAME capture-time prefix. A --from-cache upload of a
 cached file therefore keeps that file's original capture-ts name end to end (the
