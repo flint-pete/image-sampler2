@@ -14,6 +14,15 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Changed
+- Analysis doc: final cleanup pass. Removed superseded-draft archaeology now that
+  the design is settled — stripped the rejected-alternatives list and "Option C"
+  labels from 2.11 (EXIF), the "Opt-4" tag from 2.10, and the internal draft
+  question IDs (Q0/Q2) from the 2.8/2.13 headings and body cross-references.
+  Trimmed the intro's self-referential "this is a rewrite of earlier drafts"
+  meta-commentary to a concise reading guide. Kept legitimate design rationale
+  (why the naive scheduling loops are rejected), upstream->new flag mappings, and
+  the Part 1 defect->where-addressed tags. Verified all section cross-references
+  resolve and no dangling Q-number/Option-letter references remain.
 - Analysis doc 3.2 (heartbeat/liveness): sharpened and split by mode. Corrected the
   old "every cycle" wording (which would flood the data plane at up-to-1 Hz in
   continuous mode). --one-shot: emit plugin.duration.* for the single run (upload

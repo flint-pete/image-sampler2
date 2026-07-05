@@ -8,12 +8,10 @@ Purpose of this document
   enhanced fork "image-sampler2", plus (3) requirements carried forward,
   (4) genuinely open questions, and (5) deferred enhancements.
 
-  This is a clean end-to-end rewrite of the earlier iterative analysis. Earlier
-  drafts mixed "upstream code study" with "future ideas," several of which were
-  later SUPERSEDED by decisions recorded here. Every such item has been
-  reclassified below as FIXED-in-design, ADOPTED-as-requirement, DECIDED-against,
-  RESOLVED, or DEFERRED — so there are no dangling "future work" bullets that we
-  have in fact already settled.
+  Part 1 studies the upstream code and its defects; each defect is tagged with
+  where the design addresses it. Parts 2-5 are the current design — every item is
+  status-tagged (see legend) so what is settled, what is still open, and what is
+  deferred are unambiguous.
 
 Upstream under study
   App:        waggle-sensor/plugin-imagesampler (portal: yonghokim/imagesampler)
@@ -318,7 +316,7 @@ Why this is the design (the real prize):
         20.4 s then FREED (~5.6x throughput; GPU idle/shareable the rest).
   - Keeping the sampler a PURE PRODUCER (no upload, no trigger) is what makes the
     whole system composable and lets multiple consumers share one cheap producer.
-This decision drives 2.2 (modes), 2.8 (Q0 = continuous is local-only), and
+This decision drives 2.2 (modes), 2.8 (continuous is local-only), and
 2.12 (shared cross-plugin cache).
 
 MODE-AND-FLOW OVERVIEW (the whole decision tree in one place)  [LOCKED]
@@ -551,11 +549,10 @@ capture_timestamp is the node clock
 uploads produces the upload record + upload_timestamp at that time).
 
 ───────────────────────────────
-2.8  Q0 RESOLVED: --continuous IS LOCAL-ONLY + --from-cache  [LOCKED]
+2.8  --continuous IS LOCAL-ONLY + --from-cache  [LOCKED]
 ───────────────────────────────
-Q0 (does --continuous also upload?) RESOLVED: --continuous is STRICTLY LOCAL-ONLY,
-never uploads; the cache is its sole sink. Uploading is always a CONSUMER concern.
-This preserves the pure-producer role (2.1).
+--continuous is STRICTLY LOCAL-ONLY, never uploads; the cache is its sole sink.
+Uploading is always a CONSUMER concern. This preserves the pure-producer role (2.1).
 PERIODIC-SNAPSHOT CASE (e.g. one cloud image every ~30 min) solved by COMPOSITION,
 not an upload flag:
   (a) image-sampler2 --continuous <sec> --cache-dir ... --cache-name ...  (producer)
@@ -639,7 +636,7 @@ Why each element (ties to 1.9 collisions):
   - vsn    : fixes CROSS-node same-ns collisions (695/24h); self-identifies node.
   - camera : fixes SAME-node multi-stream/batch collisions (the old constant
              sample.jpg clobber; 760/24h).
-  - SHA256 NOT in the filename (Opt-4): unique in practice via vsn+camera+ns; the
+  - SHA256 NOT in the filename: unique in practice via vsn+camera+ns; the
     construction-guaranteed 1:1 key lives in EXIF ImageUniqueID (2.11).
 DANGERS OF THE CAPTURE-TIME PREFIX (all mitigated):
   1. Record timestamp != ingest time -> RESOLVED (2.13: data-service tolerates
@@ -650,24 +647,22 @@ DANGERS OF THE CAPTURE-TIME PREFIX (all mitigated):
   3. Send-time loss -> MITIGATED: upload_timestamp always in meta + EXIF (2.9).
 
 ───────────────────────────────
-2.11  EXIF FIELD SET (Option C hybrid + SHA256)  [LOCKED]
+2.11  EXIF FIELD SET  [LOCKED]
 ───────────────────────────────
 Goal: a downloaded bare file is self-describing AND carries a construction-
 guaranteed key to its exact event-log record.
-DECISION: Option C (HYBRID) with SHA256 as the unique id.
+DESIGN: a HYBRID embed with SHA256 as the unique id.
   - Standard EXIF tags where a real one fits (self-describing to any tool/human).
   - PLUS a complete JSON blob in UserComment (lossless machine round-trip of ALL
     fields, including those with no standard EXIF home).
   - unique_id = SHA256 of the saved JPEG bytes (also an integrity check).
-  (Rejected: A standard-tags-only = lossy; B JSON-only = not human/tool
-  self-describing at a glance. C keeps both; mild duplication is robustness.)
 THE FIELD SET (13):
   1 vsn; 2 node_id; 3 job; 4 task; 5 plugin+version; 6 camera/stream;
   7 capture_timestamp_ns (node grab); 8 upload_timestamp_ns (node send);
   9 unique_id (sha256 of bytes); 10 object_name (<ts>-v2-<vsn>-<camera>.jpg);
   11 lat/lon; 12 acquisition_path ("native-raw"|"opencv-reencoded");
   13 schema_version ("sage-img-1").
-EXIF MAPPING (Option C):
+EXIF MAPPING:
   0th IFD: Make = preserved camera Make if native-raw else "Sage/Waggle";
     Model=<vsn>; Software=<plugin>:<version>; DateTime=capture (sec, node clock);
     ImageDescription = human line.
@@ -735,7 +730,7 @@ OPEN items for this section: 4.1 (cache home + upload-agent scoping), 4.2
 (cross-user read permissions).
 
 ───────────────────────────────
-2.13  BACK-DATED TIMESTAMPS + WATCHER AUDIT (Q2 RESOLVED)  [VERIFIED]
+2.13  BACK-DATED TIMESTAMPS + WATCHER AUDIT  [VERIFIED]
 ───────────────────────────────
 Two checks cleared the capture-time prerequisite:
 CHECK 1 — data-service honors client-supplied (back-dated) timestamps: across
