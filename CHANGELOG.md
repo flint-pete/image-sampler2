@@ -13,6 +13,25 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Changed
+- Analysis doc: complete end-to-end scrub and reorganization (1405 -> 812 lines,
+  no loss of verified findings or locked decisions). Restructured into 5 status-
+  tagged parts with a legend ([LOCKED]/[VERIFIED]/[REQUIREMENT]/[OPEN]/[DEFERRED]):
+  Part I upstream code study (all VERIFIED findings preserved: pywaggle naming,
+  RTSP timestamp semantics, metadata evidence, uniqueness + coarse-clock analysis),
+  Part II image-sampler2 design (13 locked subsections incl. producer/consumer
+  architecture, modes, acquisition mandate, ring cache, Q0/from-cache, timestamps,
+  v2 naming, EXIF, shared cache, back-dated-ts verification), Part III requirements
+  carried forward (fail-soft loop, heartbeat, self-exit, format/quality, deps,
+  tests — promoted from stale "ideas" to REQUIREMENTs), Part IV open items, Part V
+  deferred enhancements. Reconciled contradictions from the accreted draft: the
+  old "add trigger-based sampling" idea is now DECIDED-against (sampler is a pure
+  producer; triggering is a consumer concern); the sample.jpg race is FIXED-in-
+  design; the BOTTOM LINE rewritten to the producer/consumer framing; all resolved
+  open questions (Q0/Q1/Q2) read as resolved. Surfaced one new OPEN item (IV.5):
+  --resize/--jpeg-quality conflicts with the never-re-encode mandate and needs a
+  reconciliation decision.
+
 ### Fixed
 - Analysis Section 3: corrected a dangling "see pitfalls" cross-reference (no such
   section ever existed) to point at Section 4 (Shortcomings), the shared sample.jpg
