@@ -14,6 +14,28 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Stage 4c: `--continuous` producer loop wired end-to-end (design 2.2 + 2.6).
+  - `app.run_capture_loop()`: monotonic-grid scheduler with skip-on-overrun; clock
+    + sleep injectable for deterministic tests (fake clock).
+  - `app._continuous_to_cache()`: resolves camera/identity, resolves cache location
+    (root auto-detect, name defaults to job id), then loops capture ->
+    scan_ring -> plan_evictions -> commit_capture. LOCAL-ONLY (never uploads);
+    fail-fast on config (camera host/creds, unwritable cache dir); fail-soft at
+    runtime (bad capture warns + skips, loop continues). One log line per write:
+    `wrote <name> size=.. evicted=.. ring_count=.. ring_mb=..`.
+  - Verified end-to-end against a mock HTTP camera: 6 ticks, ring bounded at 3,
+    evict-before-write steady, EXIF round-trips, no `.tmp` litter, password
+    redacted in logs.
+- Stage 4c CLI (breaking, approved): renamed `--cache-dir` -> `--cache-root`
+  (BASE dir; per-stream ring at `<cache-root>/<cache-name>/<camera>/`). Both
+  `--cache-root` and `--cache-name` are now OPTIONAL: root auto-detects
+  (`$IS2_CACHE_ROOT` -> `/local-cache` if present -> `/tmp`); name defaults to the
+  job id. `--continuous` interval is integer seconds. `--continuous` is ONE stream
+  per process (a1): >1 `--stream` is a fail-fast error. Cache dir is created
+  (mkdir -p) + writability-checked at run time (was: must pre-exist).
+  - Stage-0 CLI tests updated for the rename + new optional/single-stream rules.
+  - Tests: +10 (tests/test_continuous_stage4.py), -2 obsolete Stage-0 tests.
+    178 total pass.
 - Stage 4b: shared capture+embed body `capture.py::capture_and_embed_to_tmp`
   (grab -> embed -> write fsync'd `.tmp`), used by BOTH one-shot and the coming
   continuous loop so bytes/naming/EXIF are IDENTICAL across modes. Raises

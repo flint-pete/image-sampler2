@@ -19,8 +19,11 @@ import argparse
 import logging
 import os
 import sys
+import time
 
 import acquire
+import cache
+import capture as capture_mod
 import metadata
 import nodemeta
 import upload
@@ -80,13 +83,14 @@ def build_parser():
         '--one-shot', dest='one_shot', action='store_true',
         help='Capture exactly one frame, queue it for cloud upload, then exit 0. '
              'External cadence: rely on the SES scheduler to relaunch the pod. '
-             'Upload-only: never writes to --cache-dir.')
+             'Upload-only: never writes to the ring cache.')
     mode.add_argument(
         '--continuous', dest='continuous', metavar='SECONDS',
         action='store', type=int, default=None,
         help='Run forever, capturing on a FIXED PERIOD of SECONDS. Local-only: '
-             'writes each frame into the ring cache (--cache-dir) and NEVER '
-             'uploads. SECONDS must be a positive integer.')
+             'writes each frame into the ring cache (--cache-root) and NEVER '
+             'uploads. SECONDS must be a positive integer. ONE stream per process '
+             '(run a separate plugin/job per camera).')
 
     # --- source ----------------------------------------------------------------
     parser.add_argument(
@@ -107,17 +111,20 @@ def build_parser():
 
     # --- continuous ring cache (2.6 / 2.12) ------------------------------------
     parser.add_argument(
-        '--cache-dir', dest='cache_dir', metavar='DIR',
+        '--cache-root', dest='cache_root', metavar='DIR',
         action='store', default=None, type=str,
-        help='CONTINUOUS ONLY. Directory that holds the per-stream ring cache. '
-             'Must already exist and be writable. REQUIRED with --continuous.')
+        help='CONTINUOUS ONLY. Base dir for the ring cache. The per-stream ring '
+             'lives at <cache-root>/<cache-name>/<camera>/. OPTIONAL: if omitted, '
+             'auto-detected as $IS2_CACHE_ROOT -> /local-cache (if present) -> '
+             '/tmp. Created if missing; must be writable.')
     parser.add_argument(
         '--cache-name', dest='cache_name', metavar='NAME',
         action='store', default=None, type=str,
-        help='CONTINUOUS ONLY. Stable, filesystem-safe identifier for this '
-             'cache instance so consumers can find it and two configs on the '
-             'same camera do not collide. REQUIRED with --continuous. Allowed: '
-             'letters, digits, dot, dash, underscore (no path separators).')
+        help='CONTINUOUS ONLY. Filesystem-safe identifier for this cache instance '
+             '(the <cache-name> path segment) so consumers can find it and two '
+             'configs on the same camera do not collide. OPTIONAL: defaults to the '
+             'job id (WAGGLE_APP_ID/--job). Allowed: letters, digits, dot, dash, '
+             'underscore (no path separators).')
     parser.add_argument(
         '--cache-max-count', dest='cache_max_count', metavar='N',
         action='store', default=None, type=int,
@@ -202,20 +209,23 @@ def build_parser():
 def validate_args(args):
     """Validate a parsed args namespace; raise ConfigError on any bad combo.
 
-    Pure function (no exit(), no I/O side effects beyond an os.path check on
-    --cache-dir) so it is unit-testable. Encodes the fail-fast rules from the
-    design doc:
+    Pure function (no exit(), no I/O side effects) so it is unit-testable. Encodes
+    the fail-fast rules from the design doc:
       - exactly one mode (argparse already enforces required + mutually
         exclusive, but we re-check for direct callers/tests)                (2.2)
       - --continuous SECONDS must be a positive integer                     (2.2)
       - at least one --stream                                              (2.2)
+      - --continuous is ONE stream per process (a1): >1 --stream -> error   (2.6)
       - if --name given, its count must match --stream                     (1.2/2.2)
       - --from-cache is one-shot only                                       (2.8)
-      - cache flags (--cache-dir/-name/-max-*) are continuous only          (2.6)
-      - --continuous REQUIRES --cache-dir, --cache-name, and at least one cap (2.6)
-      - --cache-dir must be an existing, writable directory                 (2.6)
-      - --cache-name must be filesystem-safe                                (2.12)
+      - cache flags (--cache-root/-name/-max-*) are continuous only         (2.6)
+      - --continuous REQUIRES at least one cap; root/name are OPTIONAL       (2.6)
+        (root auto-detects /local-cache-else-/tmp; name defaults to job id)
+      - --cache-name, if given, must be filesystem-safe                     (2.12)
       - caps, if set, must be positive                                      (2.6)
+    Cache-root existence/writability is NOT checked here: it is created (mkdir -p)
+    and writability-checked at run time by cache.stream_dir (root may not exist yet,
+    e.g. a fresh /tmp subtree), so that stays a runtime fail-fast in the loop.
     """
     one_shot = bool(getattr(args, 'one_shot', False))
     continuous = getattr(args, 'continuous', None)
@@ -235,6 +245,13 @@ def validate_args(args):
     if len(streams) == 0:
         raise ConfigError("at least one --stream is required")
 
+    # --continuous is ONE stream per process (a1): reject >1 --stream. One plugin
+    # instance = one camera stream; run a separate plugin/job per camera (2.6).
+    if continuous is not None and len(streams) > 1:
+        raise ConfigError(
+            f"--continuous supports exactly one --stream (got {len(streams)}); "
+            "run a separate plugin/job per camera (one plugin = one camera stream)")
+
     # --name count must match --stream count when names are given
     names = args.name or []
     if len(names) > 0 and len(names) != len(streams):
@@ -243,7 +260,7 @@ def validate_args(args):
 
     # cache flags: which ones were supplied?
     cache_flags_set = [
-        ('--cache-dir', args.cache_dir is not None),
+        ('--cache-root', args.cache_root is not None),
         ('--cache-name', args.cache_name is not None),
         ('--cache-max-count', args.cache_max_count is not None),
         ('--cache-max-mb', args.cache_max_mb is not None),
@@ -271,11 +288,8 @@ def validate_args(args):
     if args.from_cache is not None:
         raise ConfigError("--from-cache is only valid with --one-shot")
 
-    # --continuous REQUIRES --cache-dir and --cache-name (2.6)
-    if args.cache_dir is None:
-        raise ConfigError("--continuous requires --cache-dir")
-    if args.cache_name is None:
-        raise ConfigError("--continuous requires --cache-name")
+    # root and name are OPTIONAL (2.6): root auto-detects (/local-cache-else-/tmp),
+    # name defaults to the job id. Neither is required here.
 
     # at least one cap, else the ring is unbounded (2.6)
     if args.cache_max_count is None and args.cache_max_mb is None:
@@ -291,17 +305,12 @@ def validate_args(args):
         raise ConfigError(
             f"--cache-max-mb must be a positive number (got {args.cache_max_mb})")
 
-    # --cache-name must be filesystem-safe (2.12)
-    if not _is_valid_cache_name(args.cache_name):
+    # --cache-name, IF given, must be filesystem-safe (2.12). When omitted it
+    # defaults to the job id at run time (validated there).
+    if args.cache_name is not None and not _is_valid_cache_name(args.cache_name):
         raise ConfigError(
             f"--cache-name '{args.cache_name}' is not filesystem-safe; use only "
             "letters, digits, dot, dash, underscore (no path separators/spaces)")
-
-    # --cache-dir must be an existing, writable directory (2.6)
-    if not os.path.isdir(args.cache_dir):
-        raise ConfigError(f"--cache-dir '{args.cache_dir}' is not an existing directory")
-    if not os.access(args.cache_dir, os.W_OK):
-        raise ConfigError(f"--cache-dir '{args.cache_dir}' is not writable")
 
 
 def summarize(args):
@@ -316,8 +325,8 @@ def summarize(args):
     if args.cache_max_mb is not None:
         caps.append(f"max_mb={args.cache_max_mb}")
     return (f"mode=continuous interval={args.continuous}s streams={args.stream} "
-            f"names={args.name or '(auto)'} cache_dir={args.cache_dir} "
-            f"cache_name={args.cache_name} caps=[{', '.join(caps)}]")
+            f"names={args.name or '(auto)'} cache_root={args.cache_root or '(auto)'} "
+            f"cache_name={args.cache_name or '(job)'} caps=[{', '.join(caps)}]")
 
 
 def _one_shot_from_camera(args):
@@ -385,6 +394,133 @@ def _one_shot_from_camera(args):
     return EXIT_OK
 
 
+def _resolve_camera_config(args):
+    """Shared camera/identity resolution for continuous mode. Returns
+    (url, ident, camera_name) or raises ConfigError on missing host/creds."""
+    if not args.camera_host:
+        raise ConfigError("--camera-host (or env CAMERA_HOST) is required for a "
+                          "from-camera capture")
+    user = os.environ.get("CAMERA_USER")
+    password = os.environ.get("CAMERA_PASSWORD")
+    if not user or password is None:
+        raise ConfigError("set CAMERA_USER and CAMERA_PASSWORD in the environment "
+                          "(credentials are never passed as flags)")
+    ident = nodemeta.resolve_identity(
+        vsn=args.vsn, node_id=args.node_id, lat=args.lat, lon=args.lon,
+        manifest_path=args.node_manifest)
+    camera_name = (args.name[0] if args.name else args.stream[0])
+    try:
+        url = acquire.build_reolink_snap_url(
+            args.camera_host, args.camera_port, user, password, args.camera_channel)
+    except ValueError as e:
+        raise ConfigError(str(e))
+    return url, ident, camera_name
+
+
+def run_capture_loop(*, interval_s, do_capture, max_ticks=None,
+                     monotonic=None, sleep=None):
+    """Monotonic-grid scheduler with skip-on-overrun (design 2.2).
+
+    Fires do_capture() on a fixed grid t0, t0+N, t0+2N ...; recomputes the next
+    tick from elapsed monotonic time each cycle so an overrun jumps to the next
+    FUTURE slot (no backlog, no busy-loop). Pure/testable: clock + sleep + the
+    capture action are injected (default to the real module clock, looked up at
+    call time so monkeypatching app.time works). `max_ticks` bounds the loop for
+    tests (None = forever). do_capture() must be fail-soft (never raise); its
+    return value is ignored here. Returns the number of ticks executed.
+    """
+    if monotonic is None:
+        monotonic = time.monotonic_ns
+    if sleep is None:
+        sleep = time.sleep
+    n_ns = interval_s * 1_000_000_000
+    start = monotonic()
+    tick = 0
+    executed = 0
+    while True:
+        target = start + tick * n_ns
+        now = monotonic()
+        if target > now:
+            sleep((target - now) / 1e9)
+        do_capture()
+        executed += 1
+        if max_ticks is not None and executed >= max_ticks:
+            return executed
+        now = monotonic()
+        tick = (now - start) // n_ns + 1     # next future slot; drops missed ticks
+
+
+def _continuous_to_cache(args, *, max_ticks=None, plugin=None):
+    """--continuous producer: capture on a fixed grid into a per-stream ring
+    (design 2.2 + 2.6). LOCAL-ONLY (never uploads). One stream per process (a1).
+
+    Fail-FAST on config (camera host/creds, cache root unwritable). Fail-SOFT at
+    runtime: a bad capture or FS hiccup warns and skips; the loop keeps running.
+    `max_ticks`/`plugin` are injection points for tests.
+    """
+    try:
+        url, ident, camera_name = _resolve_camera_config(args)
+    except ConfigError as e:
+        logger.error("config error: %s", e)
+        return EXIT_CONFIG_ERROR
+
+    if ident["vsn_is_placeholder"]:
+        logger.warning("node VSN not resolvable at runtime (sage-ci runtime VSN "
+                       "call not yet available); using PLACEHOLDER vsn=%r.",
+                       ident["vsn"])
+    if ident["lat"] is None or ident["lon"] is None:
+        logger.warning("node GPS not resolvable at runtime; omitting EXIF GPS "
+                       "(not faking coordinates).")
+
+    # Resolve cache location: root auto-detect (/local-cache-else-/tmp), name
+    # defaults to job id. stream_dir does mkdir -p + writability (fail-fast).
+    cache_root = cache.resolve_cache_root(args.cache_root)
+    cache_name = args.cache_name or _safe_job_name(args.job)
+    try:
+        sdir = cache.stream_dir(cache_root, cache_name, camera_name)
+    except cache.CacheError as e:
+        logger.error("config error: %s", e)
+        return EXIT_CONFIG_ERROR
+
+    logger.info("STAGE 4: continuous -> ring %s (interval=%ds caps: count=%s mb=%s)",
+                sdir, args.continuous, args.cache_max_count, args.cache_max_mb)
+
+    def one_tick():
+        try:
+            cap = capture_mod.capture_and_embed_to_tmp(
+                url=url, capture_timeout=args.capture_timeout,
+                vsn=ident["vsn"], node_id=ident["node_id"], job=args.job,
+                task=args.task, plugin_version=args.plugin_version,
+                camera=camera_name, lat=ident["lat"], lon=ident["lon"],
+                dest_dir=sdir)
+        except capture_mod.CaptureError as e:
+            logger.warning("STAGE 4: capture skipped: %s", e)
+            return
+        ring = cache.scan_ring(sdir)
+        plan = cache.plan_evictions(ring, cap["final_bytes"],
+                                    args.cache_max_count, args.cache_max_mb)
+        res = cache.commit_capture(sdir, cap["tmp_path"], cap["final_name"], plan)
+        for w in res.warnings:
+            logger.warning("STAGE 4: %s", w)
+        if res.written:
+            after = cache.scan_ring(sdir)
+            logger.info("STAGE 4: wrote %s size=%d evicted=%d ring_count=%d "
+                        "ring_mb=%.3f", cap["final_name"], cap["final_bytes"],
+                        len(res.evicted), after.count,
+                        after.total_bytes / cache.BYTES_PER_MB)
+
+    run_capture_loop(interval_s=args.continuous, do_capture=one_tick,
+                     max_ticks=max_ticks)
+    return EXIT_OK
+
+
+def _safe_job_name(job):
+    """Coerce a job label into a filesystem-safe cache-name; fallback if empty."""
+    import re
+    candidate = re.sub(r"[^A-Za-z0-9._-]", "-", str(job or "")).strip("-")
+    return candidate or "imagesampler2"
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -396,21 +532,20 @@ def main(argv=None):
 
     logger.info("image-sampler2 config OK: %s", summarize(args))
 
-    # Dispatch. Stage 1 implements one-shot-from-camera (single stream). Other
-    # paths are validated but not yet wired (later stages).
+    # Dispatch. One-shot-from-camera (Stage 3) and continuous-to-cache (Stage 4)
+    # are wired; --from-cache is Stage 6.
     if args.one_shot and args.from_cache is None:
         if len(args.stream) > 1:
-            logger.warning("STAGE 1: multi-stream not wired yet; capturing the "
-                           "first stream only (%s)", args.stream[0])
+            logger.warning("STAGE 3: multi-stream not wired in one-shot; capturing "
+                           "the first stream only (%s)", args.stream[0])
         return _one_shot_from_camera(args)
 
     if args.one_shot and args.from_cache is not None:
-        logger.info("STAGE 1: --from-cache path not implemented yet (Stage 6).")
+        logger.info("--from-cache path not implemented yet (Stage 6).")
         return EXIT_OK
 
-    # continuous
-    logger.info("STAGE 1: --continuous path not implemented yet (Stage 4).")
-    return EXIT_OK
+    # continuous (single stream, enforced by validate_args)
+    return _continuous_to_cache(args)
 
 
 if __name__ == '__main__':

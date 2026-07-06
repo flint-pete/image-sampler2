@@ -62,7 +62,7 @@ def test_continuous_non_integer_rejected_by_argparse():
 def test_continuous_non_positive_rejected(bad):
     with pytest.raises(app.ConfigError, match="positive integer"):
         validate(["--continuous", bad, "--stream", "top_camera",
-                  "--cache-dir", ".", "--cache-name", "c", "--cache-max-count", "5"])
+                  "--cache-root", ".", "--cache-name", "c", "--cache-max-count", "5"])
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def test_one_shot_from_camera_ok():
 
 
 @pytest.mark.parametrize("cache_flag", [
-    ["--cache-dir", "."],
+    ["--cache-root", "."],
     ["--cache-name", "c"],
     ["--cache-max-count", "10"],
     ["--cache-max-mb", "50"],
@@ -123,35 +123,37 @@ def test_one_shot_from_cache_ok(tmp_path):
 def test_from_cache_rejected_in_continuous(tmp_path):
     with pytest.raises(app.ConfigError, match="only valid with --one-shot"):
         validate(["--continuous", "10", "--stream", "a",
-                  "--cache-dir", str(tmp_path), "--cache-name", "c",
+                  "--cache-root", str(tmp_path), "--cache-name", "c",
                   "--cache-max-count", "5", "--from-cache", str(tmp_path)])
 
 
 # ---------------------------------------------------------------------------
-# CONTINUOUS: requires cache-dir, cache-name, >=1 cap (2.6)
+# CONTINUOUS: root + name OPTIONAL (auto-detect / job-id default); >=1 cap (2.6)
 # ---------------------------------------------------------------------------
 
-def test_continuous_requires_cache_dir(tmp_path):
-    with pytest.raises(app.ConfigError, match="requires --cache-dir"):
-        validate(["--continuous", "10", "--stream", "a",
-                  "--cache-name", "c", "--cache-max-count", "5"])
+def test_continuous_root_and_name_optional(tmp_path):
+    # Neither --cache-root nor --cache-name is required; a cap is enough.
+    args = validate(["--continuous", "10", "--stream", "a", "--cache-max-count", "5"])
+    assert args.cache_root is None      # auto-detected at run time
+    assert args.cache_name is None      # defaults to job id at run time
 
 
-def test_continuous_requires_cache_name(tmp_path):
-    with pytest.raises(app.ConfigError, match="requires --cache-name"):
-        validate(["--continuous", "10", "--stream", "a",
-                  "--cache-dir", str(tmp_path), "--cache-max-count", "5"])
+def test_continuous_single_stream_enforced():
+    # a1: --continuous rejects more than one --stream.
+    with pytest.raises(app.ConfigError, match="exactly one --stream"):
+        validate(["--continuous", "10", "--stream", "top", "--stream", "bottom",
+                  "--cache-max-count", "5"])
 
 
 def test_continuous_requires_a_cap(tmp_path):
     with pytest.raises(app.ConfigError, match="at least one of --cache-max"):
         validate(["--continuous", "10", "--stream", "a",
-                  "--cache-dir", str(tmp_path), "--cache-name", "c"])
+                  "--cache-root", str(tmp_path), "--cache-name", "c"])
 
 
 def test_continuous_count_cap_ok(tmp_path):
     args = validate(["--continuous", "10", "--stream", "a",
-                     "--cache-dir", str(tmp_path), "--cache-name", "c",
+                     "--cache-root", str(tmp_path), "--cache-name", "c",
                      "--cache-max-count", "100"])
     assert args.continuous == 10
     assert args.cache_max_count == 100
@@ -159,14 +161,14 @@ def test_continuous_count_cap_ok(tmp_path):
 
 def test_continuous_mb_cap_ok(tmp_path):
     args = validate(["--continuous", "10", "--stream", "a",
-                     "--cache-dir", str(tmp_path), "--cache-name", "c",
+                     "--cache-root", str(tmp_path), "--cache-name", "c",
                      "--cache-max-mb", "50"])
     assert args.cache_max_mb == 50.0
 
 
 def test_continuous_both_caps_ok(tmp_path):
     args = validate(["--continuous", "10", "--stream", "a",
-                     "--cache-dir", str(tmp_path), "--cache-name", "c",
+                     "--cache-root", str(tmp_path), "--cache-name", "c",
                      "--cache-max-count", "100", "--cache-max-mb", "50"])
     assert args.cache_max_count == 100 and args.cache_max_mb == 50.0
 
@@ -180,48 +182,20 @@ def test_continuous_both_caps_ok(tmp_path):
 def test_continuous_non_positive_caps_rejected(tmp_path, cap, val):
     with pytest.raises(app.ConfigError, match="must be a positive"):
         validate(["--continuous", "10", "--stream", "a",
-                  "--cache-dir", str(tmp_path), "--cache-name", "c", cap, val])
+                  "--cache-root", str(tmp_path), "--cache-name", "c", cap, val])
 
 
 # ---------------------------------------------------------------------------
-# --cache-dir existence / writability (2.6)
-# ---------------------------------------------------------------------------
-
-def test_continuous_cache_dir_missing_rejected(tmp_path):
-    missing = str(tmp_path / "does_not_exist")
-    with pytest.raises(app.ConfigError, match="not an existing directory"):
-        validate(["--continuous", "10", "--stream", "a",
-                  "--cache-dir", missing, "--cache-name", "c",
-                  "--cache-max-count", "5"])
-
-
-def test_continuous_cache_dir_not_writable_rejected(tmp_path):
-    ro = tmp_path / "readonly"
-    ro.mkdir()
-    os.chmod(ro, 0o500)  # r-x, no write
-    try:
-        # root ignores permission bits; skip if we can still write.
-        if os.access(str(ro), os.W_OK):
-            pytest.skip("running as root: write bit not enforced")
-        with pytest.raises(app.ConfigError, match="not writable"):
-            validate(["--continuous", "10", "--stream", "a",
-                      "--cache-dir", str(ro), "--cache-name", "c",
-                      "--cache-max-count", "5"])
-    finally:
-        os.chmod(ro, 0o700)  # restore so tmp cleanup works
-
-
-# ---------------------------------------------------------------------------
-# --cache-name filesystem safety (2.12)
+# --cache-name filesystem safety, IF given (2.12)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("bad_name", [
     "has/slash", "has\\back", "has space", "", "tab\tname", "dot/../escape",
 ])
 def test_continuous_bad_cache_name_rejected(tmp_path, bad_name):
-    with pytest.raises(app.ConfigError, match="not filesystem-safe|requires --cache-name"):
+    with pytest.raises(app.ConfigError, match="not filesystem-safe"):
         validate(["--continuous", "10", "--stream", "a",
-                  "--cache-dir", str(tmp_path), "--cache-name", bad_name,
+                  "--cache-root", str(tmp_path), "--cache-name", bad_name,
                   "--cache-max-count", "5"])
 
 
@@ -230,7 +204,7 @@ def test_continuous_bad_cache_name_rejected(tmp_path, bad_name):
 ])
 def test_continuous_good_cache_name_ok(tmp_path, ok_name):
     args = validate(["--continuous", "10", "--stream", "a",
-                     "--cache-dir", str(tmp_path), "--cache-name", ok_name,
+                     "--cache-root", str(tmp_path), "--cache-name", ok_name,
                      "--cache-max-count", "5"])
     assert args.cache_name == ok_name
 
@@ -252,11 +226,19 @@ def test_main_ok_one_shot_requires_camera_config():
     assert rc == app.EXIT_CONFIG_ERROR
 
 
-def test_main_ok_continuous(tmp_path):
-    rc = app.main(["--continuous", "10", "--stream", "top_camera",
-                   "--cache-dir", str(tmp_path), "--cache-name", "c",
-                   "--cache-max-count", "5"])
-    assert rc == app.EXIT_OK
+def test_main_continuous_needs_camera_config(tmp_path):
+    # Continuous now runs the producer loop, which fail-fasts without a camera
+    # host (flag or env), same as one-shot-from-camera.
+    import os as _os
+    saved = _os.environ.pop("CAMERA_HOST", None)
+    try:
+        rc = app.main(["--continuous", "10", "--stream", "top_camera",
+                       "--cache-root", str(tmp_path), "--cache-name", "c",
+                       "--cache-max-count", "5"])
+    finally:
+        if saved is not None:
+            _os.environ["CAMERA_HOST"] = saved
+    assert rc == app.EXIT_CONFIG_ERROR
 
 
 def test_main_config_error_returns_nonzero():
@@ -370,7 +352,7 @@ def test_summarize_one_shot():
 
 def test_summarize_continuous(tmp_path):
     args = validate(["--continuous", "30", "--stream", "top_camera",
-                     "--cache-dir", str(tmp_path), "--cache-name", "c",
+                     "--cache-root", str(tmp_path), "--cache-name", "c",
                      "--cache-max-count", "5"])
     s = app.summarize(args)
     assert "continuous" in s and "interval=30s" in s
