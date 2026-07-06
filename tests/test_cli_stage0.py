@@ -272,8 +272,8 @@ def test_main_argparse_error_exits(tmp_path):
 
 
 def test_main_stage1_capture_dispatch(tmp_path, monkeypatch):
-    # one-shot-from-camera with camera config + env creds -> calls acquire and
-    # returns OK. acquire is mocked so no real network/camera is touched.
+    # one-shot-from-camera --out-path (raw) with camera config + env creds ->
+    # fetches raw bytes and saves them. acquire is mocked (no real camera).
     import acquire as _acq
     dst = str(tmp_path / "cap.jpg")
     monkeypatch.setenv("CAMERA_USER", "admin")
@@ -281,21 +281,59 @@ def test_main_stage1_capture_dispatch(tmp_path, monkeypatch):
 
     calls = {}
 
-    def fake_capture(url, path, timeout):
+    def fake_fetch(url, timeout):
         calls["url"] = url
-        calls["path"] = path
-        # write a real file so os.path.getsize works
-        with open(path, "wb") as f:
-            f.write(b"\xff\xd8fake\xff\xd9")
-        return path
+        return b"\xff\xd8fake\xff\xd9"
 
-    monkeypatch.setattr(_acq, "capture_still_to_path", fake_capture)
+    monkeypatch.setattr(_acq, "fetch_raw_still", fake_fetch)
     rc = app.main(["--one-shot", "--stream", "top_camera",
                    "--camera-host", "10.0.0.9", "--camera-port", "10000",
                    "--out-path", dst])
     assert rc == app.EXIT_OK
-    assert calls["path"] == dst
+    assert os.path.isfile(dst)
     assert "cmd=Snap" in calls["url"]
+
+
+def test_main_stage2_embed_dispatch(tmp_path, monkeypatch):
+    # one-shot --out-dir --vsn -> Stage 2: fetch raw, embed EXIF, save v2-named.
+    import acquire as _acq
+    import metadata as _md
+    pytest.importorskip("piexif")
+    from PIL import Image
+    monkeypatch.setenv("CAMERA_USER", "admin")
+    monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+
+    # a real (tiny) JPEG so piexif can inject
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), (10, 20, 30)).save(buf, "jpeg")
+    jpeg = buf.getvalue()
+    monkeypatch.setattr(_acq, "fetch_raw_still", lambda url, timeout: jpeg)
+
+    outdir = str(tmp_path / "out")
+    rc = app.main(["--one-shot", "--stream", "top_camera",
+                   "--camera-host", "10.0.0.9", "--out-dir", outdir,
+                   "--vsn", "H00F", "--lat", "41.718", "--lon", "-87.9827"])
+    assert rc == app.EXIT_OK
+    # a v2-named file exists in outdir
+    files = os.listdir(outdir)
+    assert len(files) == 1
+    name = files[0]
+    assert name.endswith("-v2-H00F-top_camera.jpg")
+    # and it round-trips our fields
+    with open(os.path.join(outdir, name), "rb") as f:
+        payload, uid = _md.read_back_fields(f.read())
+    assert payload["vsn"] == "H00F"
+    assert payload["camera"] == "top_camera"
+
+
+def test_main_stage2_requires_vsn(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAMERA_USER", "admin")
+    monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+    monkeypatch.delenv("WAGGLE_NODE_VSN", raising=False)
+    rc = app.main(["--one-shot", "--stream", "top_camera",
+                   "--camera-host", "10.0.0.9", "--out-dir", str(tmp_path / "o")])
+    assert rc == app.EXIT_CONFIG_ERROR
 
 
 def test_main_stage1_missing_creds_config_error(tmp_path, monkeypatch):
@@ -310,7 +348,7 @@ def test_main_stage1_capture_error_returns_capture_code(tmp_path, monkeypatch):
     import acquire as _acq
     monkeypatch.setenv("CAMERA_USER", "admin")
     monkeypatch.setenv("CAMERA_PASSWORD", "pw")
-    monkeypatch.setattr(_acq, "capture_still_to_path",
+    monkeypatch.setattr(_acq, "fetch_raw_still",
                         mock.Mock(side_effect=_acq.CaptureTimeout("timed out")))
     rc = app.main(["--one-shot", "--stream", "top_camera",
                    "--camera-host", "10.0.0.9", "--out-path", str(tmp_path / "c.jpg")])

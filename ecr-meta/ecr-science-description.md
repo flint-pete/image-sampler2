@@ -75,6 +75,31 @@ password is redacted in log output).
 - **`--capture-timeout SECONDS`** — hard timeout for a single capture (default `10`).
 - **`CAMERA_USER` / `CAMERA_PASSWORD`** *(environment only)* — camera credentials.
 
+### One-shot output
+
+- **`--out-dir DIR`** — write the captured frame **EXIF-embedded and v2-named**
+  (`<capture_ts_ns>-v2-<vsn>-<camera>.jpg`) into `DIR`. This is the normal one-shot
+  output: the file is self-describing (standard EXIF tags + a full JSON provenance
+  blob in UserComment + SHA256 of the original frame in `ImageUniqueID`), and the
+  original camera pixels are **never re-encoded**. Requires `--vsn`.
+- **`--out-path PATH`** — write the **raw** captured JPEG (no EXIF, no v2 name) to
+  `PATH`. Debug/diagnostic path; prefer `--out-dir`.
+
+### Node / provenance identity
+
+Embedded into the EXIF (and used for the v2 filename). Each has an environment
+fallback matching Waggle conventions.
+
+- **`--vsn VSN`** — node VSN (e.g. `H00F`). Default env `WAGGLE_NODE_VSN`. Used in
+  the v2 filename and EXIF. Required for `--out-dir`.
+- **`--node-id ID`** — node hardware id. Default env `WAGGLE_NODE_ID`.
+- **`--job NAME`** — job name for provenance. Default env `WAGGLE_JOB_NAME` or `sage`.
+- **`--task NAME`** — task name. Default env `WAGGLE_TASK_NAME` or `image-sampler2`.
+- **`--plugin-version REF`** — plugin image `ref:version` recorded in EXIF.
+- **`--lat DEG` / `--lon DEG`** — node latitude/longitude in decimal degrees
+  (defaults env `WAGGLE_NODE_LAT` / `WAGGLE_NODE_LON`). Omitted from EXIF GPS if
+  unset; negative values are stored correctly (absolute value + N/S/E/W ref).
+
 ### Ring cache (continuous only)
 
 - **`--cache-dir DIR`** *(required with `--continuous`)*

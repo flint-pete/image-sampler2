@@ -1,3 +1,4 @@
 pip
 croniter
 pywaggle[vision] == 0.56.*
+piexif == 1.1.*

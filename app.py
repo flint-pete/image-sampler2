@@ -21,6 +21,18 @@ import os
 import sys
 
 import acquire
+import metadata
+
+
+def _env_float(name):
+    """Parse an env var as float, or None if unset/blank/invalid."""
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -152,8 +164,48 @@ def build_parser():
     parser.add_argument(
         '--out-path', dest='out_path', metavar='PATH',
         action='store', default=None, type=str,
-        help='STAGE 1 ONLY (temporary): write the captured raw JPEG to PATH. '
-             'Later stages replace this with v2 naming + upload/cache.')
+        help='STAGE 1 (raw debug): write the captured RAW JPEG (no EXIF, no v2 '
+             'name) to PATH. For the Stage-2 self-describing file use --out-dir.')
+    parser.add_argument(
+        '--out-dir', dest='out_dir', metavar='DIR',
+        action='store', default=None, type=str,
+        help='Write the captured frame, EXIF-embedded and v2-named '
+             '(<capture_ts_ns>-v2-<vsn>-<camera>.jpg), into DIR. Stage 2 one-shot '
+             'output. Created if missing.')
+
+    # --- node / provenance identity (design 2.9/2.11 field set) ----------------
+    # Env fallbacks match the Waggle/pywaggle conventions where they exist.
+    parser.add_argument(
+        '--vsn', dest='vsn', metavar='VSN',
+        action='store', default=os.environ.get('WAGGLE_NODE_VSN'), type=str,
+        help='Node VSN (e.g. H00F). Default env WAGGLE_NODE_VSN. Used in the v2 '
+             'name and EXIF.')
+    parser.add_argument(
+        '--node-id', dest='node_id', metavar='ID',
+        action='store', default=os.environ.get('WAGGLE_NODE_ID', ''), type=str,
+        help='Node hardware id. Default env WAGGLE_NODE_ID.')
+    parser.add_argument(
+        '--job', dest='job', metavar='NAME',
+        action='store', default=os.environ.get('WAGGLE_JOB_NAME', 'sage'), type=str,
+        help='Job name for provenance. Default env WAGGLE_JOB_NAME or "sage".')
+    parser.add_argument(
+        '--task', dest='task', metavar='NAME',
+        action='store', default=os.environ.get('WAGGLE_TASK_NAME', 'image-sampler2'),
+        type=str, help='Task name for provenance. Default env WAGGLE_TASK_NAME.')
+    parser.add_argument(
+        '--plugin-version', dest='plugin_version', metavar='REF',
+        action='store', default=os.environ.get('IS2_PLUGIN_VERSION', 'image-sampler2:dev'),
+        type=str, help='Plugin image ref:version for EXIF Software/plugin field.')
+    parser.add_argument(
+        '--lat', dest='lat', metavar='DEG', action='store',
+        default=_env_float('WAGGLE_NODE_LAT'), type=float,
+        help='Node latitude (decimal degrees). Default env WAGGLE_NODE_LAT. '
+             'Omitted from EXIF GPS if unset.')
+    parser.add_argument(
+        '--lon', dest='lon', metavar='DEG', action='store',
+        default=_env_float('WAGGLE_NODE_LON'), type=float,
+        help='Node longitude (decimal degrees). Default env WAGGLE_NODE_LON. '
+             'Omitted from EXIF GPS if unset.')
 
     return parser
 
@@ -279,20 +331,21 @@ def summarize(args):
             f"cache_name={args.cache_name} caps=[{', '.join(caps)}]")
 
 
-def _one_shot_from_camera_stage1(args):
-    """STAGE 1: capture ONE raw still from the camera and save it to --out-path.
-
-    Reads credentials from the environment (CAMERA_USER / CAMERA_PASSWORD) --
-    never from flags. Builds the Reolink native-still URL and saves the raw bytes
-    untouched (no naming/EXIF/upload yet -- Stage 2/3). Returns an exit code.
+def _one_shot_from_camera(args):
+    """One-shot from camera. Stage 1 (--out-path, raw) or Stage 2 (--out-dir,
+    EXIF-embedded + v2-named). Credentials are env-only. Returns an exit code.
     """
     if not args.camera_host:
         logger.error("config error: --camera-host (or env CAMERA_HOST) is required "
                      "for a from-camera capture")
         return EXIT_CONFIG_ERROR
-    if not args.out_path:
-        logger.error("config error: --out-path is required in Stage 1 to save the "
-                     "captured frame (temporary; later stages name/upload it)")
+    if not args.out_path and not args.out_dir:
+        logger.error("config error: provide --out-dir (Stage-2 v2-named, "
+                     "EXIF-embedded) or --out-path (Stage-1 raw)")
+        return EXIT_CONFIG_ERROR
+    if args.out_dir and not args.vsn:
+        logger.error("config error: --vsn (or env WAGGLE_NODE_VSN) is required for "
+                     "the v2 filename with --out-dir")
         return EXIT_CONFIG_ERROR
 
     user = os.environ.get("CAMERA_USER")
@@ -309,8 +362,12 @@ def _one_shot_from_camera_stage1(args):
         logger.error("config error: %s", e)
         return EXIT_CONFIG_ERROR
 
+    camera_name = (args.name[0] if args.name else args.stream[0])
+
+    # Capture-ts is stamped at the grab (2.9). Fetch raw bytes first.
+    capture_ts_ns = metadata.now_capture_ts_ns()
     try:
-        out = acquire.capture_still_to_path(url, args.out_path, args.capture_timeout)
+        raw = acquire.fetch_raw_still(url, args.capture_timeout)
     except acquire.CaptureTimeout as e:
         logger.error("capture timeout: %s", e)
         return EXIT_CAPTURE_ERROR
@@ -318,8 +375,38 @@ def _one_shot_from_camera_stage1(args):
         logger.error("capture error: %s", e)
         return EXIT_CAPTURE_ERROR
 
-    size = os.path.getsize(out)
-    logger.info("STAGE 1: captured raw still -> %s (%d bytes)", out, size)
+    # Stage-1 raw debug sink: save untouched bytes, done.
+    if args.out_path and not args.out_dir:
+        try:
+            acquire.save_bytes_atomic(raw, args.out_path)
+        except acquire.CaptureError as e:
+            logger.error("save error: %s", e)
+            return EXIT_CAPTURE_ERROR
+        logger.info("STAGE 1: captured raw still -> %s (%d bytes)",
+                    args.out_path, len(raw))
+        return EXIT_OK
+
+    # Stage-2: embed EXIF (no re-encode) and save under the v2 name.
+    try:
+        final_bytes, unique_id = metadata.embed_all(
+            raw, vsn=args.vsn, node_id=args.node_id, job=args.job, task=args.task,
+            plugin=args.plugin_version, camera=camera_name,
+            capture_ts_ns=capture_ts_ns, upload_ts_ns=None,
+            lat=args.lat, lon=args.lon, acquisition_path="native-raw")
+    except Exception as e:  # bad field -> fail-fast (config-like)
+        logger.error("metadata embed error: %s", e)
+        return EXIT_CAPTURE_ERROR
+
+    v2_name = metadata.build_v2_name(capture_ts_ns, args.vsn, camera_name)
+    final_path = os.path.join(args.out_dir, v2_name)
+    try:
+        acquire.save_bytes_atomic(final_bytes, final_path)
+    except acquire.CaptureError as e:
+        logger.error("save error: %s", e)
+        return EXIT_CAPTURE_ERROR
+
+    logger.info("STAGE 2: captured + embedded -> %s (%d bytes, uid=%s)",
+                final_path, len(final_bytes), unique_id[:12])
     return EXIT_OK
 
 
@@ -340,7 +427,7 @@ def main(argv=None):
         if len(args.stream) > 1:
             logger.warning("STAGE 1: multi-stream not wired yet; capturing the "
                            "first stream only (%s)", args.stream[0])
-        return _one_shot_from_camera_stage1(args)
+        return _one_shot_from_camera(args)
 
     if args.one_shot and args.from_cache is not None:
         logger.info("STAGE 1: --from-cache path not implemented yet (Stage 6).")

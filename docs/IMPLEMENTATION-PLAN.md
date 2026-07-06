@@ -109,26 +109,32 @@ requirements at Stage 2.
 
 ---
 
-## Stage 2 — Capture-ts + v2 naming + EXIF embed  `[TODO]`  (the self-describing file)
+## Stage 2 — Capture-ts + v2 naming + EXIF embed  `[DONE]`  (the self-describing file)
 
-**Features:**
-- Node-clock `capture_ts = time.time_ns()` at grab (2.9).
-- Full v2 filename `<capture_ts_ns>-v2-<vsn>-<camera>.jpg` built by the sampler
-  (2.10), written to the cache/output path.
-- EXIF embed (2.11) using the Stage-1.5 library: standard tags + UserComment JSON
-  blob (13 fields) + SHA256 of final bytes as ImageUniqueID; injected without
-  re-encode (2.3).
+Verified on H00F 2026-07-06.
 
-**Interlinked rationale:** these three are one feature seen three ways — the name
-needs the capture_ts; "self-describing" can't be verified without reading the EXIF
-back. All operate on the single saved frame from Stage 1.
+**Shipped:**
+- `metadata.py`: `now_capture_ts_ns` (2.9); `build_v2_name`/`object_name_for`
+  (`<capture_ts_ns>-v2-<vsn>-<camera>.jpg`, 2.10); `build_exif_bytes` (2.11 mapping
+  — standard tags + full JSON UserComment with the 8-byte ASCII prefix + GPS
+  abs-value+ref for negative coords); `inject_exif` (piexif, no re-encode);
+  `embed_all` (one-pass compute unique_id -> build EXIF -> inject); `read_back_fields`.
+- unique_id semantics RESOLVED (design 4.6): SHA256 of the ORIGINAL frame (a
+  self-hash can't live in the bytes it hashes), written to BOTH UserComment JSON
+  and ImageUniqueID.
+- `app.py`: one-shot `--out-dir` path does capture -> embed -> save v2-named.
+  Added node/provenance flags (`--vsn`/`--node-id`/`--job`/`--task`/
+  `--plugin-version`/`--lat`/`--lon`, env fallbacks); `--out-path` kept for raw
+  Stage-1 debug. `piexif == 1.1.*` added to requirements.
+- Tests: `tests/test_metadata_stage2.py` (16) + Stage-2 dispatch tests; 92 total,
+  all pass.
 
-**Verify (on-node):**
-- exiftool/piexif reads back all 13 fields; SHA256 matches the file bytes.
-- Filename prefix decodes to the capture instant (node clock).
-- Any camera-authored segments survive intact (verify on a Mobotix frame if
-  available; on Reolink confirm no corruption).
-- `vsn`, `camera`, lat/lon (H00F 41.7180, -87.9827) correct.
+**Verified on-node (H00F, one live capture):**
+- Real 4K frame captured, embedded, saved as `<ts>-v2-H00F-top.jpg` (+984 bytes EXIF).
+- **PIXEL SCAN (SOS..EOI) byte-identical to the raw capture** — no re-encode.
+- unique_id == SHA256(raw); JSON unique_id == ImageUniqueID tag.
+- All fields round-trip (capture-ts, object_name, lat/lon -87.9827, plugin, etc.).
+- APP1/EXIF now present where the raw Reolink frame had none.
 
 ---
 

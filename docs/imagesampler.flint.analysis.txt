@@ -680,7 +680,9 @@ DESIGN: a HYBRID embed with SHA256 as the unique id.
   - Standard EXIF tags where a real one fits (self-describing to any tool/human).
   - PLUS a complete JSON blob in UserComment (lossless machine round-trip of ALL
     fields, including those with no standard EXIF home).
-  - unique_id = SHA256 of the saved JPEG bytes (also an integrity check).
+  - unique_id = SHA256 of the ORIGINAL captured frame (before injection), in both
+    UserComment JSON and ImageUniqueID; see 4.6 (a self-hash cannot live inside the
+    bytes it hashes). Also serves as the capture identity/integrity key.
 THE FIELD SET (13):
   1 vsn; 2 node_id; 3 job; 4 task; 5 plugin+version; 6 camera/stream;
   7 capture_timestamp_ns (node grab); 8 upload_timestamp_ns (node send);
@@ -697,10 +699,9 @@ EXIF MAPPING:
   GPS IFD: GPSLatitude/Ref, GPSLongitude/Ref; GPSDateStamp/TimeStamp (optional).
 NATIVE-RAW + INJECTION: when preserving camera bytes (2.3), INSERT our EXIF/
 UserComment into the existing JPEG WITHOUT re-encoding, leaving camera segments
-(e.g. Mobotix M1IMG) intact. SHA256 is computed over the FINAL saved bytes (after
-injection) so it matches the stored object.
-EXIF-INJECTION LIBRARY choice (must inject without a pixel re-encode) is OPEN —
-see 4.4.
+(e.g. Mobotix M1IMG) intact. unique_id = SHA256 of the ORIGINAL frame (before
+injection); see 4.6.
+EXIF-INJECTION LIBRARY: piexif (RESOLVED, see 4.4).
 
 ───────────────────────────────
 2.12  SHARED CROSS-PLUGIN CACHE (consumer triggers)  [LOCKED, w/ open items]
@@ -903,10 +904,29 @@ Genuinely open items requiring a decision or a check before/at build.
     - GPS: piexif CANNOT take signed lat/lon — store ABS value as DMS rationals
       plus a ref ("N"/"S", "E"/"W"). H00F lon -87.9827 -> (87,1)(58,1)... ref="W".
       (Signed values raise struct.error in piexif.dump.)
-    - SHA256 is computed over the FINAL injected bytes (after insert) so it matches
-      the stored object; compute it last.
+    - SHA256 unique_id semantics: see 4.6 (hash of the ORIGINAL frame, not the
+      final injected bytes — a self-hash cannot live inside the bytes it hashes).
   Fallback/opencv-reencoded path: same piexif.insert on the re-encoded bytes (no
   foreign segments to preserve there). Add piexif to requirements.txt.
+
+4.6  SHA256 unique_id semantics (resolves a 2.11 self-reference)  [RESOLVED 2026-07-06]
+  2.11 field 9 (unique_id) is a SHA256 that (a) must be a stable construction-
+  guaranteed key and (b) is embedded in EXIF. The original 2.11 phrasing ("SHA256
+  of the FINAL saved bytes") is impossible for an EMBEDDED value: adding the hash
+  to the EXIF changes the bytes, so a hash of the final file can never equal a
+  value stored inside that file (self-reference paradox). DECISION (verified on
+  H00F 2026-07-06):
+    - unique_id = SHA256 of the ORIGINAL captured frame bytes (camera's raw JPEG,
+      BEFORE any EXIF injection). Stable, reproducible from the source frame,
+      uniquely identifies the capture. Written to BOTH the UserComment JSON and
+      the standard EXIF ImageUniqueID tag (they agree — verified).
+    - Pixels are never re-encoded, so the embedded frame's compressed data is
+      byte-identical to the source (verified: SOS..EOI scan identical on a real 4K
+      Reolink frame; only ~984 bytes of APP1 added).
+    - If an object-integrity hash of the FINAL stored bytes is ever wanted, it
+      belongs in the UPLOAD META at Stage 3 (outside the file), where it can equal
+      the stored object without paradox. NOT embedded.
+  This supersedes the "hash of final bytes" wording in 2.11/4.4.
 
 4.5  RESIZE/QUALITY vs NEVER-RE-ENCODE reconciliation  [OPEN]
   Decide how --jpeg-quality/--resize (3.4) coexist with the raw-native mandate

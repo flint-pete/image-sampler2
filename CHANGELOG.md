@@ -14,6 +14,22 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Stage 2 (capture-ts + v2 naming + EXIF embed; the self-describing file).
+  Verified on H00F 2026-07-06.
+  - metadata.py: now_capture_ts_ns (2.9); build_v2_name/object_name_for
+    (<capture_ts_ns>-v2-<vsn>-<camera>.jpg, 2.10); build_exif_bytes (2.11 mapping:
+    standard tags + full JSON UserComment with 8-byte ASCII prefix; GPS abs-value
+    + N/S/E/W ref for negative coords); inject_exif (piexif, no pixel re-encode);
+    embed_all (one pass: unique_id -> EXIF -> inject); read_back_fields.
+  - app.py: one-shot --out-dir path captures -> embeds -> saves v2-named. New node/
+    provenance flags --vsn/--node-id/--job/--task/--plugin-version/--lat/--lon (env
+    fallbacks WAGGLE_NODE_*). --out-path retained for raw Stage-1 debug.
+    EXIT_CAPTURE_ERROR used for embed failures.
+  - requirements.txt: piexif == 1.1.*.
+  - tests/test_metadata_stage2.py (16) + Stage-2 dispatch tests; 92 total, all pass.
+  - On-node verification: real 4K frame, PIXEL SCAN (SOS..EOI) byte-identical to
+    raw (no re-encode, +984 bytes EXIF); unique_id == SHA256(raw); JSON unique_id
+    == ImageUniqueID tag; all fields round-trip; APP1/EXIF now present.
 - Stage 1 (single real capture -> save raw bytes; the acquisition spine).
   Verified on H00F 2026-07-06.
   - acquire.py: native-still HTTP fetch. build_reolink_snap_url (query-param auth,
@@ -58,10 +74,16 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   - Added .gitignore (venv, __pycache__, pytest cache, sample.jpg).
 
 ### Changed
+- Design 2.11/4.4 unique_id semantics superseded by new 4.6 [RESOLVED]: unique_id
+  = SHA256 of the ORIGINAL captured frame (before injection), not the final saved
+  bytes. A hash of the final file cannot live inside that file (self-reference
+  paradox); the source-frame hash is stable and written to BOTH UserComment JSON
+  and ImageUniqueID. Object-integrity hash of final bytes, if ever wanted, goes in
+  upload meta (Stage 3), not embedded. Mirror re-synced.
 - Design doc 4.4: moved OPEN -> RESOLVED (piexif). Recorded the decision and the
   empirically-learned API quirks (BytesIO sink for in-memory bytes; UserComment
-  8-byte charset prefix; GPS abs value + N/S/E/W ref, no signed values; SHA256 over
-  final injected bytes). Mirror re-synced.
+  8-byte charset prefix; GPS abs value + N/S/E/W ref, no signed values). Mirror
+  re-synced.
 - ecr-meta/ecr-science-description.md: rewritten to document the new two-mode CLI
   and every flag (what each does, which mode it belongs to) plus the fail-fast
   rules and usage examples (one-shot, multi-stream, continuous producer,
