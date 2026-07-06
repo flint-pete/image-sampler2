@@ -14,6 +14,14 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Stage 4b: shared capture+embed body `capture.py::capture_and_embed_to_tmp`
+  (grab -> embed -> write fsync'd `.tmp`), used by BOTH one-shot and the coming
+  continuous loop so bytes/naming/EXIF are IDENTICAL across modes. Raises
+  `capture.CaptureError` on grab/embed failure (fail-soft at callers).
+  - `upload.py::one_shot_upload` refactored to call the shared body for phases 1-2,
+    then rename the staged `.tmp` to the object name for pywaggle upload. Behaviour
+    preserving: all Stage-3 tests stay green; return `info` shape unchanged.
+  - Tests: +8 (tests/test_capture_stage4.py). 170 total pass.
 - Stage 4a: pure ring-cache module `cache.py` (no camera/network/pywaggle; FS-only,
   fully unit-tested). Implements design 2.6:
   - `resolve_cache_root()` auto-detect precedence `$IS2_CACHE_ROOT` -> `/local-cache`

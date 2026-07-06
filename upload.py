@@ -25,6 +25,7 @@
 import time
 
 import acquire
+import capture as capture_mod
 import metadata
 
 
@@ -63,44 +64,40 @@ def one_shot_upload(*, url, capture_timeout, vsn, node_id, job, task, plugin_ver
     ctx = plugin if hasattr(plugin, "__enter__") else _nullcontext(plugin)
     try:
         with ctx:
-            # --- phase 1: grab -------------------------------------------------
-            t0 = time.time_ns()
-            capture_ts_ns = capture_ts_ns or metadata.now_capture_ts_ns()
-            try:
-                raw = acquire.fetch_raw_still(url, capture_timeout)
-            except acquire.CaptureTimeout as e:
-                return False, {"error": f"capture timeout: {e}"}
-            except acquire.CaptureError as e:
-                return False, {"error": f"capture error: {e}"}
-            grab_ns = _duration_ns(t0)
-
-            # --- phase 2: embed ------------------------------------------------
-            t1 = time.time_ns()
-            try:
-                final_bytes, unique_id = metadata.embed_all(
-                    raw, vsn=vsn, node_id=node_id, job=job, task=task,
-                    plugin=plugin_version, camera=camera,
-                    capture_ts_ns=capture_ts_ns, upload_ts_ns=None,
-                    lat=lat, lon=lon, acquisition_path="native-raw",
-                    preserved_make=preserved_make)
-            except Exception as e:
-                return False, {"error": f"metadata embed error: {e}"}
-            embed_ns = _duration_ns(t1)
-
-            object_name = metadata.build_v2_name(capture_ts_ns, vsn, camera)
-            info.update(object_name=object_name, unique_id=unique_id,
-                        raw_bytes=len(raw), final_bytes=len(final_bytes))
-
-            # --- phase 3: upload ----------------------------------------------
-            # Stage the bytes to a temp file for pywaggle (it uploads a path).
-            t2 = time.time_ns()
-            upload_ts_ns = metadata.now_capture_ts_ns()
+            # --- phases 1+2: grab + embed (SHARED body, Stage 4b) --------------
+            # capture_and_embed_to_tmp stages an fsync'd .tmp in a private temp dir;
+            # we then rename it to the final object name for pywaggle upload.
             import os
             import tempfile
             tmpdir = tempfile.mkdtemp(prefix="is2-upload-")
+            try:
+                cap = capture_mod.capture_and_embed_to_tmp(
+                    url=url, capture_timeout=capture_timeout,
+                    vsn=vsn, node_id=node_id, job=job, task=task,
+                    plugin_version=plugin_version, camera=camera,
+                    lat=lat, lon=lon, dest_dir=tmpdir,
+                    capture_ts_ns=capture_ts_ns, acquisition_path="native-raw",
+                    preserved_make=preserved_make)
+            except capture_mod.CaptureError as e:
+                _rmtree_quiet(tmpdir)
+                return False, {"error": str(e)}
+
+            capture_ts_ns = cap["capture_ts_ns"]
+            unique_id = cap["unique_id"]
+            object_name = cap["final_name"]
+            grab_ns = cap["grab_ns"]
+            embed_ns = cap["embed_ns"]
+            info.update(object_name=object_name, unique_id=unique_id,
+                        raw_bytes=cap["raw_bytes"], final_bytes=cap["final_bytes"])
+
+            # --- phase 3: upload ----------------------------------------------
+            # Rename the staged .tmp to the final object name (same temp fs), then
+            # pywaggle uploads that path with capture-time keying.
+            t2 = time.time_ns()
+            upload_ts_ns = metadata.now_capture_ts_ns()
             staged = os.path.join(tmpdir, object_name)
             try:
-                acquire.save_bytes_atomic(final_bytes, staged)
+                os.replace(cap["tmp_path"], staged)
                 meta = {
                     "camera": str(camera),
                     "vsn": str(vsn),
@@ -147,6 +144,15 @@ def one_shot_upload(*, url, capture_timeout, vsn, node_id, job, task, plugin_ver
                 plugin.close()
             except Exception:
                 pass
+
+
+def _rmtree_quiet(path):
+    """Remove a temp dir and its contents, ignoring errors (cleanup helper)."""
+    import shutil
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
 
 
 class _nullcontext:
