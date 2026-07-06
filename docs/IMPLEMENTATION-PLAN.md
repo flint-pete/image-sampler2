@@ -122,15 +122,20 @@ Verified on H00F 2026-07-06.
 - unique_id semantics RESOLVED (design 4.6): SHA256 of the ORIGINAL frame (a
   self-hash can't live in the bytes it hashes), written to BOTH UserComment JSON
   and ImageUniqueID.
-- `app.py`: one-shot `--out-dir` path does capture -> embed -> save v2-named.
-  Added node/provenance flags (`--vsn`/`--node-id`/`--job`/`--task`/
-  `--plugin-version`/`--lat`/`--lon`, env fallbacks); `--out-path` kept for raw
-  Stage-1 debug. `piexif == 1.1.*` added to requirements.
-- Tests: `tests/test_metadata_stage2.py` (16) + Stage-2 dispatch tests; 92 total,
-  all pass.
+- `app.py`: node/provenance flags added (`--vsn`/`--node-id`/`--job`/`--task`/
+  `--plugin-version`/`--lat`/`--lon`, env fallbacks) — these feed the EXIF at
+  upload time (Stage 3). `piexif == 1.1.*` added to requirements.
+- NO CLI output sink: Stage 2's deliverable is the embed LOGIC (metadata.py), not
+  a user-facing flag. The one-shot path stays a clean "arrives in Stage 3" stub;
+  the design's only destinations are upload (one-shot) and the ring `--cache-dir`
+  (continuous). (An earlier draft added `--out-dir`/`--out-path`; both were REMOVED
+  — `--out-dir` collided with the upstream flag the design renamed to `--cache-dir`,
+  and one-shot is upload-only. A regression test guards against their return.)
+- Verified with a THROWAWAY script (`spikes/verify_stage2_oneshot.py`), not a flag.
+- Tests: `tests/test_metadata_stage2.py` (16) + CLI stub/regression tests; all pass.
 
-**Verified on-node (H00F, one live capture):**
-- Real 4K frame captured, embedded, saved as `<ts>-v2-H00F-top.jpg` (+984 bytes EXIF).
+**Verified on-node (H00F, one live capture via the throwaway script):**
+- Real 4K frame captured, embedded (+984 bytes EXIF).
 - **PIXEL SCAN (SOS..EOI) byte-identical to the raw capture** — no re-encode.
 - unique_id == SHA256(raw); JSON unique_id == ImageUniqueID tag.
 - All fields round-trip (capture-ts, object_name, lat/lon -87.9827, plugin, etc.).

@@ -161,17 +161,6 @@ def build_parser():
         '--capture-timeout', dest='capture_timeout', metavar='SECONDS',
         action='store', default=float(os.environ.get('CAPTURE_TIMEOUT', "10")), type=float,
         help='Hard timeout (seconds) for a single capture (default 10).')
-    parser.add_argument(
-        '--out-path', dest='out_path', metavar='PATH',
-        action='store', default=None, type=str,
-        help='STAGE 1 (raw debug): write the captured RAW JPEG (no EXIF, no v2 '
-             'name) to PATH. For the Stage-2 self-describing file use --out-dir.')
-    parser.add_argument(
-        '--out-dir', dest='out_dir', metavar='DIR',
-        action='store', default=None, type=str,
-        help='Write the captured frame, EXIF-embedded and v2-named '
-             '(<capture_ts_ns>-v2-<vsn>-<camera>.jpg), into DIR. Stage 2 one-shot '
-             'output. Created if missing.')
 
     # --- node / provenance identity (design 2.9/2.11 field set) ----------------
     # Env fallbacks match the Waggle/pywaggle conventions where they exist.
@@ -332,81 +321,21 @@ def summarize(args):
 
 
 def _one_shot_from_camera(args):
-    """One-shot from camera. Stage 1 (--out-path, raw) or Stage 2 (--out-dir,
-    EXIF-embedded + v2-named). Credentials are env-only. Returns an exit code.
+    """One-shot from camera -> upload. The upload path lands in Stage 3.
+
+    Config that is knowable now is still validated (fail-fast), but there is no
+    local output sink: one-shot is upload-only by design (2.2/2.8). The capture +
+    EXIF-embed logic lives in acquire.py / metadata.py and is exercised by the
+    Stage-2 throwaway verification script; it gets wired into plugin.upload_file()
+    at Stage 3.
     """
     if not args.camera_host:
         logger.error("config error: --camera-host (or env CAMERA_HOST) is required "
                      "for a from-camera capture")
         return EXIT_CONFIG_ERROR
-    if not args.out_path and not args.out_dir:
-        logger.error("config error: provide --out-dir (Stage-2 v2-named, "
-                     "EXIF-embedded) or --out-path (Stage-1 raw)")
-        return EXIT_CONFIG_ERROR
-    if args.out_dir and not args.vsn:
-        logger.error("config error: --vsn (or env WAGGLE_NODE_VSN) is required for "
-                     "the v2 filename with --out-dir")
-        return EXIT_CONFIG_ERROR
 
-    user = os.environ.get("CAMERA_USER")
-    password = os.environ.get("CAMERA_PASSWORD")
-    if not user or password is None:
-        logger.error("config error: set CAMERA_USER and CAMERA_PASSWORD in the "
-                     "environment (credentials are never passed as flags)")
-        return EXIT_CONFIG_ERROR
-
-    try:
-        url = acquire.build_reolink_snap_url(
-            args.camera_host, args.camera_port, user, password, args.camera_channel)
-    except ValueError as e:
-        logger.error("config error: %s", e)
-        return EXIT_CONFIG_ERROR
-
-    camera_name = (args.name[0] if args.name else args.stream[0])
-
-    # Capture-ts is stamped at the grab (2.9). Fetch raw bytes first.
-    capture_ts_ns = metadata.now_capture_ts_ns()
-    try:
-        raw = acquire.fetch_raw_still(url, args.capture_timeout)
-    except acquire.CaptureTimeout as e:
-        logger.error("capture timeout: %s", e)
-        return EXIT_CAPTURE_ERROR
-    except acquire.CaptureError as e:
-        logger.error("capture error: %s", e)
-        return EXIT_CAPTURE_ERROR
-
-    # Stage-1 raw debug sink: save untouched bytes, done.
-    if args.out_path and not args.out_dir:
-        try:
-            acquire.save_bytes_atomic(raw, args.out_path)
-        except acquire.CaptureError as e:
-            logger.error("save error: %s", e)
-            return EXIT_CAPTURE_ERROR
-        logger.info("STAGE 1: captured raw still -> %s (%d bytes)",
-                    args.out_path, len(raw))
-        return EXIT_OK
-
-    # Stage-2: embed EXIF (no re-encode) and save under the v2 name.
-    try:
-        final_bytes, unique_id = metadata.embed_all(
-            raw, vsn=args.vsn, node_id=args.node_id, job=args.job, task=args.task,
-            plugin=args.plugin_version, camera=camera_name,
-            capture_ts_ns=capture_ts_ns, upload_ts_ns=None,
-            lat=args.lat, lon=args.lon, acquisition_path="native-raw")
-    except Exception as e:  # bad field -> fail-fast (config-like)
-        logger.error("metadata embed error: %s", e)
-        return EXIT_CAPTURE_ERROR
-
-    v2_name = metadata.build_v2_name(capture_ts_ns, args.vsn, camera_name)
-    final_path = os.path.join(args.out_dir, v2_name)
-    try:
-        acquire.save_bytes_atomic(final_bytes, final_path)
-    except acquire.CaptureError as e:
-        logger.error("save error: %s", e)
-        return EXIT_CAPTURE_ERROR
-
-    logger.info("STAGE 2: captured + embedded -> %s (%d bytes, uid=%s)",
-                final_path, len(final_bytes), unique_id[:12])
+    logger.info("STAGE 2: one-shot upload path not implemented yet (Stage 3). "
+                "Capture+embed logic is verified via the throwaway script.")
     return EXIT_OK
 
 
