@@ -14,6 +14,24 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Stage 3 (one-shot upload path; first end-to-end Beehive result). Verified on
+  H00F 2026-07-06.
+  - upload.py one_shot_upload(): grab -> embed -> pywaggle upload_file(path, meta,
+    timestamp=capture_ts_ns) [capture-time keying, 2.10]. meta carries
+    capture_timestamp/upload_timestamp/unique_id/vsn/node_id/job/task/plugin/
+    acquisition_path/schema_version, ALL stringified (pywaggle valid_meta).
+    plugin.duration.grab/embed/upload published in NANOSECONDS. Fail-soft on
+    runtime capture/upload errors (-> EXIT_CAPTURE_ERROR).
+  - nodemeta.py: fleet-portable node identity from /etc/waggle (precedence flag >
+    node-manifest-v2.json > /etc/waggle/vsn|node-id). --node-manifest /
+    WAGGLE_NODE_MANIFEST override.
+  - app.py one-shot path wired: resolve identity -> URL -> upload.
+  - tests: test_nodemeta_stage3.py (8) + test_upload_stage3.py (6, fake plugin);
+    107 total, all pass.
+  - On-node: manifest auto-resolved identity with ZERO flags (vsn=H00F,
+    lat=41.7179852752395, lon=-87.98271513806043); pywaggle staged
+    <capture_ts>-<sha1>/{data,meta} with record timestamp == capture ts; meta all
+    strings; unique_id matches embedded EXIF; durations published.
 - Stage 2 (capture-ts + v2 naming + EXIF embed; the self-describing file).
   Verified on H00F 2026-07-06.
   - metadata.py: now_capture_ts_ns (2.9); build_v2_name/object_name_for
@@ -84,6 +102,14 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   path is a clean "arrives in Stage 3" stub.
 
 ### Changed
+- Node identity sourcing corrected (design 2.11b) after verifying against pywaggle
+  source + a live H00F pod: node VSN/geo are NOT in pod env vars (pywaggle reads
+  only WAGGLE_PLUGIN_*/WAGGLE_APP_ID). The real source is /etc/waggle/
+  node-manifest-v2.json (world-readable). REMOVED the bogus WAGGLE_NODE_VSN/
+  WAGGLE_NODE_LAT/WAGGLE_NODE_LON env fallbacks (those vars do not exist) and the
+  --lat/--lon default env lookups; --vsn/--node-id/--lat/--lon now default None and
+  OVERRIDE the manifest. Result: fleet-portable self-identification with no
+  per-node config.
 - Design 2.11/4.4 unique_id semantics superseded by new 4.6 [RESOLVED]: unique_id
   = SHA256 of the ORIGINAL captured frame (before injection), not the final saved
   bytes. A hash of the final file cannot live inside that file (self-reference

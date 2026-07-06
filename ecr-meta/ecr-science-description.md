@@ -77,18 +77,22 @@ password is redacted in log output).
 
 ### Node / provenance identity
 
-Embedded into the EXIF (and used for the v2 filename) at upload time. Each has an
-environment fallback matching Waggle conventions.
+Embedded into the EXIF and attached to the upload meta. On a real Sage node these
+are read automatically from `/etc/waggle/node-manifest-v2.json` (and the
+`/etc/waggle/vsn` / `node-id` files) — so the plugin self-identifies on any node
+with no per-node configuration. The flags below OVERRIDE the manifest.
 
-- **`--vsn VSN`** — node VSN (e.g. `H00F`). Default env `WAGGLE_NODE_VSN`. Used in
-  the v2 filename and EXIF.
-- **`--node-id ID`** — node hardware id. Default env `WAGGLE_NODE_ID`.
+- **`--vsn VSN`** — node VSN (e.g. `H00F`). Overrides the manifest. Used in the v2
+  filename and EXIF. Fatal if it cannot be resolved (flag or manifest).
+- **`--node-id ID`** — node hardware id. Overrides manifest `.name` / `/etc/waggle/node-id`.
+- **`--lat DEG` / `--lon DEG`** — node latitude/longitude (decimal degrees).
+  Override manifest `.gps_lat` / `.gps_lon`. Omitted from EXIF GPS if unresolved;
+  negative values stored correctly (absolute value + N/S/E/W ref).
+- **`--node-manifest PATH`** — path to the node manifest JSON (default env
+  `WAGGLE_NODE_MANIFEST` or `/etc/waggle/node-manifest-v2.json`). For testing / off-node use.
 - **`--job NAME`** — job name for provenance. Default env `WAGGLE_JOB_NAME` or `sage`.
 - **`--task NAME`** — task name. Default env `WAGGLE_TASK_NAME` or `image-sampler2`.
-- **`--plugin-version REF`** — plugin image `ref:version` recorded in EXIF.
-- **`--lat DEG` / `--lon DEG`** — node latitude/longitude in decimal degrees
-  (defaults env `WAGGLE_NODE_LAT` / `WAGGLE_NODE_LON`). Omitted from EXIF GPS if
-  unset; negative values are stored correctly (absolute value + N/S/E/W ref).
+- **`--plugin-version REF`** — plugin image `ref:version` recorded in EXIF/meta.
 
 ### Ring cache (continuous only)
 

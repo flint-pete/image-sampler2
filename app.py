@@ -22,17 +22,8 @@ import sys
 
 import acquire
 import metadata
-
-
-def _env_float(name):
-    """Parse an env var as float, or None if unset/blank/invalid."""
-    v = os.environ.get(name)
-    if v is None or v == "":
-        return None
-    try:
-        return float(v)
-    except ValueError:
-        return None
+import nodemeta
+import upload
 
 logging.basicConfig(
     level=logging.INFO,
@@ -163,16 +154,20 @@ def build_parser():
         help='Hard timeout (seconds) for a single capture (default 10).')
 
     # --- node / provenance identity (design 2.9/2.11 field set) ----------------
-    # Env fallbacks match the Waggle/pywaggle conventions where they exist.
+    # Node identity (vsn, node_id, gps) is NOT in pod env vars on the Sage
+    # platform; it lives in /etc/waggle/node-manifest-v2.json (verified on H00F).
+    # These flags OVERRIDE the manifest; when omitted, nodemeta.resolve_identity()
+    # fills them from the manifest so the plugin self-identifies on any node with
+    # no per-node config. Defaults are None here (not env lookups).
     parser.add_argument(
         '--vsn', dest='vsn', metavar='VSN',
-        action='store', default=os.environ.get('WAGGLE_NODE_VSN'), type=str,
-        help='Node VSN (e.g. H00F). Default env WAGGLE_NODE_VSN. Used in the v2 '
-             'name and EXIF.')
+        action='store', default=None, type=str,
+        help='Node VSN (e.g. H00F). Overrides the node manifest. Used in the v2 '
+             'name and EXIF. If omitted, read from /etc/waggle/node-manifest-v2.json.')
     parser.add_argument(
         '--node-id', dest='node_id', metavar='ID',
-        action='store', default=os.environ.get('WAGGLE_NODE_ID', ''), type=str,
-        help='Node hardware id. Default env WAGGLE_NODE_ID.')
+        action='store', default=None, type=str,
+        help='Node hardware id. Overrides the manifest (.name) / /etc/waggle/node-id.')
     parser.add_argument(
         '--job', dest='job', metavar='NAME',
         action='store', default=os.environ.get('WAGGLE_JOB_NAME', 'sage'), type=str,
@@ -187,14 +182,19 @@ def build_parser():
         type=str, help='Plugin image ref:version for EXIF Software/plugin field.')
     parser.add_argument(
         '--lat', dest='lat', metavar='DEG', action='store',
-        default=_env_float('WAGGLE_NODE_LAT'), type=float,
-        help='Node latitude (decimal degrees). Default env WAGGLE_NODE_LAT. '
-             'Omitted from EXIF GPS if unset.')
+        default=None, type=float,
+        help='Node latitude (decimal degrees). Overrides the manifest (.gps_lat). '
+             'If unresolved, omitted from EXIF GPS.')
     parser.add_argument(
         '--lon', dest='lon', metavar='DEG', action='store',
-        default=_env_float('WAGGLE_NODE_LON'), type=float,
-        help='Node longitude (decimal degrees). Default env WAGGLE_NODE_LON. '
-             'Omitted from EXIF GPS if unset.')
+        default=None, type=float,
+        help='Node longitude (decimal degrees). Overrides the manifest (.gps_lon). '
+             'If unresolved, omitted from EXIF GPS.')
+    parser.add_argument(
+        '--node-manifest', dest='node_manifest', metavar='PATH',
+        action='store', default=None, type=str,
+        help='Path to the node manifest JSON (default env WAGGLE_NODE_MANIFEST or '
+             '/etc/waggle/node-manifest-v2.json). For testing/off-node use.')
 
     return parser
 
@@ -321,21 +321,57 @@ def summarize(args):
 
 
 def _one_shot_from_camera(args):
-    """One-shot from camera -> upload. The upload path lands in Stage 3.
+    """One-shot from camera -> Beehive upload (Stage 3).
 
-    Config that is knowable now is still validated (fail-fast), but there is no
-    local output sink: one-shot is upload-only by design (2.2/2.8). The capture +
-    EXIF-embed logic lives in acquire.py / metadata.py and is exercised by the
-    Stage-2 throwaway verification script; it gets wired into plugin.upload_file()
-    at Stage 3.
+    Resolves node identity (flags override the /etc/waggle node manifest), builds
+    the Reolink URL from env-only credentials, then captures + embeds + uploads
+    with capture-time keying. Fail-fast on config; fail-soft on runtime.
     """
     if not args.camera_host:
         logger.error("config error: --camera-host (or env CAMERA_HOST) is required "
                      "for a from-camera capture")
         return EXIT_CONFIG_ERROR
 
-    logger.info("STAGE 2: one-shot upload path not implemented yet (Stage 3). "
-                "Capture+embed logic is verified via the throwaway script.")
+    user = os.environ.get("CAMERA_USER")
+    password = os.environ.get("CAMERA_PASSWORD")
+    if not user or password is None:
+        logger.error("config error: set CAMERA_USER and CAMERA_PASSWORD in the "
+                     "environment (credentials are never passed as flags)")
+        return EXIT_CONFIG_ERROR
+
+    # Node identity: flags override the on-node manifest (fleet-portable default).
+    ident = nodemeta.resolve_identity(
+        vsn=args.vsn, node_id=args.node_id, lat=args.lat, lon=args.lon,
+        manifest_path=args.node_manifest)
+    if not ident["vsn"]:
+        logger.error("config error: node VSN could not be resolved (no --vsn and no "
+                     "/etc/waggle/node-manifest-v2.json). Required for the v2 name.")
+        return EXIT_CONFIG_ERROR
+
+    camera_name = (args.name[0] if args.name else args.stream[0])
+
+    try:
+        url = acquire.build_reolink_snap_url(
+            args.camera_host, args.camera_port, user, password, args.camera_channel)
+    except ValueError as e:
+        logger.error("config error: %s", e)
+        return EXIT_CONFIG_ERROR
+
+    ok, res = upload.one_shot_upload(
+        url=url, capture_timeout=args.capture_timeout,
+        vsn=ident["vsn"], node_id=ident["node_id"], job=args.job, task=args.task,
+        plugin_version=args.plugin_version, camera=camera_name,
+        lat=ident["lat"], lon=ident["lon"])
+
+    if not ok:
+        logger.error("STAGE 3: one-shot upload failed: %s", res.get("error"))
+        return EXIT_CAPTURE_ERROR
+
+    logger.info("STAGE 3: uploaded %s (%d bytes, uid=%s) capture_ts=%s "
+                "grab=%.1fms embed=%.1fms upload=%.1fms",
+                res["object_name"], res["final_bytes"], res["unique_id"][:12],
+                res["capture_ts_ns"], res["grab_ns"] / 1e6,
+                res["embed_ns"] / 1e6, res["upload_ns"] / 1e6)
     return EXIT_OK
 
 

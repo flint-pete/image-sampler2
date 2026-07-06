@@ -280,16 +280,55 @@ def test_main_one_shot_from_camera_requires_host(tmp_path, monkeypatch):
     assert rc == app.EXIT_CONFIG_ERROR
 
 
-def test_main_one_shot_from_camera_stub_ok(monkeypatch):
-    # With a camera host provided, the one-shot path is a clean stub until Stage 3:
-    # it does NOT touch the camera and returns OK. No output flags exist.
-    import acquire as _acq
-    # Guard: the stub must not call the network.
-    monkeypatch.setattr(_acq, "fetch_raw_still",
-                        mock.Mock(side_effect=AssertionError("should not fetch")))
-    rc = app.main(["--one-shot", "--stream", "top_camera",
-                   "--camera-host", "10.0.0.9"])
+def test_main_one_shot_requires_creds(monkeypatch):
+    # camera host present but no creds -> config error (creds are env-only).
+    monkeypatch.delenv("CAMERA_USER", raising=False)
+    monkeypatch.delenv("CAMERA_PASSWORD", raising=False)
+    rc = app.main(["--one-shot", "--stream", "top_camera", "--camera-host", "10.0.0.9"])
+    assert rc == app.EXIT_CONFIG_ERROR
+
+
+def test_main_one_shot_requires_vsn(tmp_path, monkeypatch):
+    # creds present but VSN unresolvable (no --vsn, empty manifest) -> config error.
+    monkeypatch.setenv("CAMERA_USER", "admin")
+    monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+    empty = tmp_path / "no-manifest.json"
+    rc = app.main(["--one-shot", "--stream", "top_camera", "--camera-host", "10.0.0.9",
+                   "--node-manifest", str(empty)])
+    assert rc == app.EXIT_CONFIG_ERROR
+
+
+def test_main_one_shot_dispatch_ok(monkeypatch):
+    # full one-shot dispatch: creds + resolved vsn -> calls upload.one_shot_upload.
+    import upload as _upl
+    monkeypatch.setenv("CAMERA_USER", "admin")
+    monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+    calls = {}
+
+    def fake_upload(**kw):
+        calls.update(kw)
+        return True, {"object_name": "1-v2-H00F-top_camera.jpg", "final_bytes": 100,
+                      "unique_id": "abc123def456", "capture_ts_ns": 1,
+                      "grab_ns": 1e6, "embed_ns": 2e6, "upload_ns": 3e6}
+
+    monkeypatch.setattr(_upl, "one_shot_upload", fake_upload)
+    rc = app.main(["--one-shot", "--stream", "top_camera", "--camera-host", "10.0.0.9",
+                   "--vsn", "H00F"])
     assert rc == app.EXIT_OK
+    assert calls["vsn"] == "H00F"
+    assert calls["camera"] == "top_camera"
+    assert "cmd=Snap" in calls["url"]
+
+
+def test_main_one_shot_upload_failure_returns_capture_code(monkeypatch):
+    import upload as _upl
+    monkeypatch.setenv("CAMERA_USER", "admin")
+    monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+    monkeypatch.setattr(_upl, "one_shot_upload",
+                        lambda **kw: (False, {"error": "beehive down"}))
+    rc = app.main(["--one-shot", "--stream", "top_camera", "--camera-host", "10.0.0.9",
+                   "--vsn", "H00F"])
+    assert rc == app.EXIT_CAPTURE_ERROR
 
 
 def test_no_out_flags_exist():

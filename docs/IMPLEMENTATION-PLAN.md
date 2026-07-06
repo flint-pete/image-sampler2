@@ -143,24 +143,41 @@ Verified on H00F 2026-07-06.
 
 ---
 
-## Stage 3 — `--one-shot` upload path  `[TODO]`  (first end-to-end cloud result)
+## Stage 3 — `--one-shot` upload path  `[DONE]`  (first end-to-end cloud result)
 
-**Features:**
-- Wire the Stage-2 frame into `plugin.upload_file(path, meta=..., timestamp=capture_ts)`
-  (the one-line capture-ts switch, 2.10).
-- `upload_timestamp` (node send time) into meta (2.9).
-- `plugin.duration.*` phase timing for the one-shot run, in NANOSECONDS (3.2).
+Verified on H00F 2026-07-06.
 
-**Interlinked rationale:** first stage that produces a Beehive record — the
-strongest verification. Closes the whole one-shot-from-camera flow (invocation 1).
+**Shipped:**
+- `upload.py` `one_shot_upload()`: grab (acquire) -> embed (metadata) -> pywaggle
+  `plugin.upload_file(path, meta, timestamp=capture_ts_ns)` — the capture-ts switch
+  (2.10). `upload_timestamp` (node send) + `capture_timestamp` + `unique_id` + vsn/
+  node_id/job/task/plugin/acquisition_path/schema_version in meta, ALL stringified
+  (pywaggle valid_meta). `plugin.duration.grab/embed/upload` published in
+  NANOSECONDS. Fail-soft: runtime capture/upload errors return (False, {error}) ->
+  EXIT_CAPTURE_ERROR; never throw past main().
+- `nodemeta.py`: node identity from /etc/waggle (see design 2.11b). Precedence
+  flag > node-manifest-v2.json > /etc/waggle/vsn|node-id. `--node-manifest` /
+  env `WAGGLE_NODE_MANIFEST` override for testing. Fixes an earlier wrong
+  assumption that WAGGLE_NODE_VSN/LAT/LON env vars exist — they don't.
+- `app.py`: one-shot path resolves identity, builds URL (env-only creds), calls
+  upload. `--vsn`/`--node-id`/`--lat`/`--lon` now OVERRIDE the manifest (defaults
+  None, not env). Fail-fast if vsn unresolved.
+- Tests: `tests/test_nodemeta_stage3.py` (8) + `tests/test_upload_stage3.py` (6,
+  fake plugin) + CLI dispatch tests; 107 total, all pass.
 
-**Verify (data plane / Beehive):**
-- `upload` record appears; object name carries the capture-ts prefix
-  `<ts>-v2-<vsn>-<camera>.jpg`.
-- `upload_timestamp` present in meta; `upload_timestamp − timestamp` = a sane,
-  positive latency.
-- `plugin.duration.*` present.
-- Object store is cross-country (~2 min propagation) — allow lag when checking.
+**Verified on-node (H00F, real capture + real pywaggle, zero identity flags):**
+- Manifest auto-resolved: vsn=H00F, node_id, lat=41.7179852752395,
+  lon=-87.98271513806043 — proving fleet portability (no per-node config).
+- pywaggle staged `<capture_ts>-<sha1>/{data,meta}`: **record timestamp == capture
+  ts** (capture-time keying); object name `<ts>-v2-H00F-top.jpg`.
+- meta: ALL label values strings; `upload_timestamp` ~1.8s after capture (real
+  latency); `unique_id` matches the EXIF in the `data` bytes; lat/lon precise.
+- `plugin.duration.grab/embed/upload` published (ns).
+
+NOTE: verified via the local pywaggle upload-staging contract
+(WAGGLE_PLUGIN_UPLOAD_PATH -> temp dir), which is exactly what the Beehive upload
+agent consumes. A full Beehive round-trip (SES job + portal) is deferred to the
+Stage-7 integration run.
 
 ---
 

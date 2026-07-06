@@ -704,6 +704,38 @@ injection); see 4.6.
 EXIF-INJECTION LIBRARY: piexif (RESOLVED, see 4.4).
 
 ───────────────────────────────
+2.11b  NODE IDENTITY SOURCING  [RESOLVED 2026-07-06, verified on H00F]
+───────────────────────────────
+Where do vsn / node_id / gps_lat / gps_lon (fields 1,2,11) come from on a REAL
+node, fleet-wide? INVESTIGATED against pywaggle source + a live H00F pod:
+  - Node identity is NOT in pod environment variables. pywaggle reads only
+    messaging plumbing vars (WAGGLE_PLUGIN_USERNAME/PASSWORD/HOST/PORT,
+    WAGGLE_APP_ID, WAGGLE_PLUGIN_UPLOAD_PATH, PYWAGGLE_LOG_DIR). It never reads a
+    node VSN or GPS. The only node-ish pod env var is KUBENODE=<hwid>.<compute>
+    (hardware id, not the VSN).
+  - The authoritative source is FILES under /etc/waggle/ (world-readable):
+      node-manifest-v2.json : {"vsn","name"(=node_id),"gps_lat","gps_lon",...}
+      vsn                   : e.g. "H00F"
+      node-id               : e.g. "00004CBB4701D16C"
+  - Node identity is ALSO attached downstream by Beehive via message routing, so
+    the plugin technically need not send it — but we still embed it in the file's
+    EXIF so a downloaded bare file is self-describing (2.11).
+RESOLUTION (nodemeta.py): resolve per field with precedence
+  explicit flag  >  node-manifest-v2.json  >  /etc/waggle/vsn|node-id (vsn/id only).
+Manifest path overridable via --node-manifest / env WAGGLE_NODE_MANIFEST (testing).
+Missing vsn is fatal for the v2 name (fail-fast); missing lat/lon just omits EXIF
+GPS. This makes the SAME image correct on any of the ~100 nodes with NO per-node
+config — verified on H00F: resolve_identity() returned vsn=H00F,
+node_id=00004CBB4701D16C, lat=41.7179852752395, lon=-87.98271513806043 with zero
+flags. (Supersedes an earlier wrong assumption that WAGGLE_NODE_VSN/LAT/LON env
+vars exist; they do not.)
+UPLOAD CONTRACT (pywaggle uploader, VERIFIED from source + on-node):
+  upload_file(path, meta, timestamp) stages root/<timestamp>-<sha1sum>/{data,meta};
+  timestamp = timestamp or get_timestamp(), so timestamp=capture_ts keys the object
+  by CAPTURE time (2.10). meta values MUST all be strings (valid_meta). We add
+  capture_timestamp/upload_timestamp/unique_id/vsn/etc. as string labels.
+
+───────────────────────────────
 2.12  SHARED CROSS-PLUGIN CACHE (consumer triggers)  [LOCKED, w/ open items]
 ───────────────────────────────
 The continuous cache is a SHARED buffer other plugins read after the fact.

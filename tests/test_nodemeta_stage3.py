@@ -1,0 +1,91 @@
+# Stage 3 tests for node identity resolution (nodemeta.py).
+#
+# PURE tests: no node, no network. Verify manifest parsing, precedence
+# (explicit > manifest > /etc/waggle files), and graceful absence.
+
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import nodemeta  # noqa: E402
+
+
+MANIFEST = {
+    "vsn": "H00F",
+    "name": "00004CBB4701D16C",
+    "gps_lat": 41.7179852752395,
+    "gps_lon": -87.98271513806043,
+    "project": "SGT",
+}
+
+
+def write_manifest(tmp_path, obj):
+    p = tmp_path / "node-manifest-v2.json"
+    p.write_text(json.dumps(obj))
+    return str(p)
+
+
+def test_load_manifest_ok(tmp_path):
+    path = write_manifest(tmp_path, MANIFEST)
+    m = nodemeta.load_manifest(path)
+    assert m["vsn"] == "H00F"
+    assert m["gps_lat"] == 41.7179852752395
+
+
+def test_load_manifest_missing_returns_empty(tmp_path):
+    assert nodemeta.load_manifest(str(tmp_path / "nope.json")) == {}
+
+
+def test_load_manifest_malformed_returns_empty(tmp_path):
+    p = tmp_path / "bad.json"
+    p.write_text("{not json")
+    assert nodemeta.load_manifest(str(p)) == {}
+
+
+def test_resolve_from_manifest(tmp_path):
+    path = write_manifest(tmp_path, MANIFEST)
+    ident = nodemeta.resolve_identity(manifest_path=path)
+    assert ident["vsn"] == "H00F"
+    assert ident["node_id"] == "00004CBB4701D16C"
+    assert abs(ident["lat"] - 41.7179852752395) < 1e-12
+    assert abs(ident["lon"] - (-87.98271513806043)) < 1e-12
+
+
+def test_explicit_overrides_manifest(tmp_path):
+    path = write_manifest(tmp_path, MANIFEST)
+    ident = nodemeta.resolve_identity(
+        vsn="W123", lat=1.5, lon=2.5, manifest_path=path)
+    assert ident["vsn"] == "W123"      # explicit wins
+    assert ident["lat"] == 1.5
+    assert ident["lon"] == 2.5
+    assert ident["node_id"] == "00004CBB4701D16C"  # not overridden -> manifest
+
+
+def test_resolve_no_sources_all_none(tmp_path, monkeypatch):
+    # point the /etc/waggle fallbacks at nonexistent paths so nothing resolves
+    monkeypatch.setattr(nodemeta, "DEFAULT_VSN_FILE", str(tmp_path / "no-vsn"))
+    monkeypatch.setattr(nodemeta, "DEFAULT_NODE_ID_FILE", str(tmp_path / "no-id"))
+    ident = nodemeta.resolve_identity(manifest_path=str(tmp_path / "no-manifest.json"))
+    assert ident == {"vsn": None, "node_id": None, "lat": None, "lon": None}
+
+
+def test_vsn_file_fallback(tmp_path, monkeypatch):
+    vf = tmp_path / "vsn"; vf.write_text("W042\n")
+    idf = tmp_path / "node-id"; idf.write_text("ABCD1234\n")
+    monkeypatch.setattr(nodemeta, "DEFAULT_VSN_FILE", str(vf))
+    monkeypatch.setattr(nodemeta, "DEFAULT_NODE_ID_FILE", str(idf))
+    ident = nodemeta.resolve_identity(manifest_path=str(tmp_path / "no-manifest.json"))
+    assert ident["vsn"] == "W042"       # from file (manifest absent)
+    assert ident["node_id"] == "ABCD1234"
+
+
+def test_manifest_beats_vsn_file(tmp_path, monkeypatch):
+    vf = tmp_path / "vsn"; vf.write_text("WRONG\n")
+    monkeypatch.setattr(nodemeta, "DEFAULT_VSN_FILE", str(vf))
+    path = write_manifest(tmp_path, MANIFEST)
+    ident = nodemeta.resolve_identity(manifest_path=path)
+    assert ident["vsn"] == "H00F"       # manifest preferred over the vsn file
