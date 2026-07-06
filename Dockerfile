@@ -9,8 +9,9 @@ FROM docker.io/waggle/plugin-base:1.1.1-base
 # both slims the image and unblocks the multi-arch build.
 
 # COPY the full plugin: app + all its modules (acquire/metadata/nodemeta/upload
-# /capture/cache). capture.py + cache.py are the Stage-4 continuous ring modules.
-COPY app.py acquire.py metadata.py nodemeta.py upload.py capture.py cache.py requirements.txt /app/
+# /capture/cache/heartbeat). capture.py + cache.py are the Stage-4 continuous ring
+# modules; heartbeat.py is the Stage-5 liveness heartbeat.
+COPY app.py acquire.py metadata.py nodemeta.py upload.py capture.py cache.py heartbeat.py requirements.txt /app/
 RUN pip3 install --no-cache-dir -U -r /app/requirements.txt
 
 ENTRYPOINT ["python3", "-u", "/app/app.py"]

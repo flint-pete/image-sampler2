@@ -41,6 +41,11 @@ so `env.imagesampler.cache.*` with `meta={cache_name, camera, ...}` is valid.
 
 ### 3.1 Cadence model — one loop, two grids
 
+STARTUP BEAT: slot 0 of the heartbeat grid is `[start, start+I)`, so the first
+heartbeat is available immediately at loop start (count=0/bytes=0 before the first
+capture). This is deliberate — an immediate "I came up" liveness signal. A long
+stall emits exactly ONE catch-up beat, never a burst.
+
 The capture loop (`run_capture_loop`, 2.2) already fires on a monotonic grid.
 The heartbeat is a SECOND monotonic grid on the SAME single-threaded loop — no
 new thread. After each capture tick we check whether the heartbeat grid is due
@@ -149,15 +154,14 @@ RECOMMENDATION: (a) — keep Stage 5 focused on liveness; §3.3 is orthogonal
 (windowed scheduling) and deserves its own small note + tests. But I'll wire the
 loop so §3.3 drops in cleanly. OPEN Q for Pete.
 
-## 7. Open questions for Pete
+## 7. Open questions for Pete — RESOLVED 2026-07-06
 
-1. Cadence edge case (§3.1): option (A) simple-but-heartbeat-bounded-by-sampling,
-   or (B) dual-grid wake so heartbeat holds ~60s even with slow sampling? (I lean B.)
-2. Payload extras (§3.2): include written/evicted/last_status, or keep it to just
-   count+bytes for v1? (I lean include — cheap, high debug value.)
-3. Scope (§6): heartbeat-only Stage 5, or fold in §3.3 self-exit? (I lean
-   heartbeat-only.)
-4. Topic names: `env.imagesampler.cache.{count,bytes,...}` OK, or do you want a
-   different namespace (e.g. `env.image_sampler2.*` to disambiguate from the
-   upstream imagesampler)? (I lean keeping `env.imagesampler.cache.*` per the
-   locked spec unless you want the fork disambiguated.)
+1. Cadence edge case (§3.1): **RESOLVED → (B) dual-grid wake.** Heartbeat holds
+   ~60s even when sampling is slower; ≤1-per-sample rule still binds when sampling
+   is faster than the heartbeat.
+2. Payload extras (§3.2): **RESOLVED → INCLUDE** written/evicted/last_status
+   (delta semantics, reset each heartbeat) alongside count+bytes.
+3. Scope (§6): **RESOLVED → heartbeat-ONLY Stage 5.** §3.3 self-exit deferred to
+   its own later stage; loop structured so it drops in cleanly.
+4. Topic names: **RESOLVED → keep `env.imagesampler.cache.{count,bytes,...}`** per
+   the locked spec (no fork disambiguation).

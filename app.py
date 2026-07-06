@@ -24,6 +24,7 @@ import time
 import acquire
 import cache
 import capture as capture_mod
+import heartbeat as heartbeat_mod
 import metadata
 import nodemeta
 import upload
@@ -41,6 +42,13 @@ logger = logging.getLogger("image-sampler2")
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 2
 EXIT_CAPTURE_ERROR = 3
+
+# Stage 5 heartbeat topics (design §3.2, resolved: keep env.imagesampler.cache.*).
+HB_TOPIC_COUNT = "env.imagesampler.cache.count"
+HB_TOPIC_BYTES = "env.imagesampler.cache.bytes"
+HB_TOPIC_WRITTEN = "env.imagesampler.cache.written"
+HB_TOPIC_EVICTED = "env.imagesampler.cache.evicted"
+HB_TOPIC_STATUS = "env.imagesampler.cache.last_status"
 
 
 class ConfigError(Exception):
@@ -137,6 +145,14 @@ def build_parser():
         help='CONTINUOUS ONLY. Max total size (decimal MB, 10^6 bytes) of the '
              'per-stream ring. Oldest are evicted first. At least one of '
              '--cache-max-count / --cache-max-mb is REQUIRED with --continuous.')
+    parser.add_argument(
+        '--heartbeat-secs', dest='heartbeat_secs', metavar='SECONDS',
+        action='store', default=None, type=int,
+        help='CONTINUOUS ONLY. Cache-heartbeat cadence in seconds (default 60), '
+             'INDEPENDENT of --continuous SECONDS. The heartbeat is the sole '
+             'liveness signal in continuous mode (local-only never uploads); it '
+             'publishes env.imagesampler.cache.* stats and fires even when '
+             'captures fail. Must be a positive integer.')
 
     # --- camera connection (native-still fetch, design 2.3/4.3) ----------------
     # Address may come from flags or env (CAMERA_HOST/PORT/CHANNEL). Credentials
@@ -264,6 +280,7 @@ def validate_args(args):
         ('--cache-name', args.cache_name is not None),
         ('--cache-max-count', args.cache_max_count is not None),
         ('--cache-max-mb', args.cache_max_mb is not None),
+        ('--heartbeat-secs', args.heartbeat_secs is not None),
     ]
     any_cache_flag = any(present for _, present in cache_flags_set)
 
@@ -312,6 +329,13 @@ def validate_args(args):
             f"--cache-name '{args.cache_name}' is not filesystem-safe; use only "
             "letters, digits, dot, dash, underscore (no path separators/spaces)")
 
+    # --heartbeat-secs, IF given, must be a positive int; else default to 60 (§3.2).
+    if args.heartbeat_secs is not None and args.heartbeat_secs <= 0:
+        raise ConfigError(
+            f"--heartbeat-secs must be a positive integer (got {args.heartbeat_secs})")
+    if args.heartbeat_secs is None:
+        args.heartbeat_secs = 60
+
 
 def summarize(args):
     """Human-readable one-line summary of the validated configuration."""
@@ -326,7 +350,8 @@ def summarize(args):
         caps.append(f"max_mb={args.cache_max_mb}")
     return (f"mode=continuous interval={args.continuous}s streams={args.stream} "
             f"names={args.name or '(auto)'} cache_root={args.cache_root or '(auto)'} "
-            f"cache_name={args.cache_name or '(job)'} caps=[{', '.join(caps)}]")
+            f"cache_name={args.cache_name or '(job)'} caps=[{', '.join(caps)}] "
+            f"heartbeat={args.heartbeat_secs or 60}s")
 
 
 def _one_shot_from_camera(args):
@@ -450,13 +475,72 @@ def run_capture_loop(*, interval_s, do_capture, max_ticks=None,
         tick = (now - start) // n_ns + 1     # next future slot; drops missed ticks
 
 
-def _continuous_to_cache(args, *, max_ticks=None, plugin=None):
+def run_dual_grid_loop(*, capture_interval_s, do_capture, heartbeat, do_heartbeat,
+                       max_iters=None, max_captures=None, monotonic=None, sleep=None):
+    """Two monotonic grids on ONE thread (design §3.1, resolution 1B).
+
+    - CAPTURE grid: fixed period capture_interval_s, skip-on-overrun (as 2.2).
+    - HEARTBEAT grid: owned by the `heartbeat` (Heartbeat) object, its own period.
+
+    Each iteration sleeps to the NEAREST of (next capture edge, next heartbeat
+    edge), then fires whichever grid(s) are due on wake. This keeps the heartbeat
+    on ~its own cadence even when the capture interval is much longer (a slow
+    timelapse still reports alive every ~60s), while never emitting more than one
+    heartbeat per grid slot. Both callbacks must be fail-soft (never raise).
+
+    do_capture(): performs one capture (and should call heartbeat.record_capture).
+    do_heartbeat(now_ns): publishes one heartbeat (caller reads
+        heartbeat.snapshot_and_reset inside). Only called when heartbeat.due().
+
+    Clock/sleep injected (looked up at call time so monkeypatch works). Two bounds
+    for tests (None = unbounded): max_iters caps WAKE iterations; max_captures caps
+    the number of do_capture() calls (the natural producer bound). Returns the
+    number of iterations executed.
+    """
+    if monotonic is None:
+        monotonic = time.monotonic_ns
+    if sleep is None:
+        sleep = time.sleep
+    cap_ns = capture_interval_s * 1_000_000_000
+    start = monotonic()
+    cap_tick = 0
+    iters = 0
+    captures = 0
+    while True:
+        now = monotonic()
+        next_cap = start + cap_tick * cap_ns
+        next_hb = heartbeat.next_due_ns(now)
+        wake_at = min(next_cap, next_hb)
+        if wake_at > now:
+            sleep((wake_at - now) / 1e9)
+        now = monotonic()
+
+        # fire heartbeat first if due, so an immediate startup beat lands before
+        # the first capture (count=0/bytes=0 == "I came up").
+        if heartbeat.due(now):
+            do_heartbeat(now)
+
+        # fire capture if its grid edge has arrived
+        if now >= next_cap:
+            do_capture()
+            captures += 1
+            cap_tick = (now - start) // cap_ns + 1   # next future capture slot
+
+        iters += 1
+        if max_iters is not None and iters >= max_iters:
+            return iters
+        if max_captures is not None and captures >= max_captures:
+            return iters
+
+
+def _continuous_to_cache(args, *, max_ticks=None, plugin=None,
+                         monotonic=None, sleep=None):
     """--continuous producer: capture on a fixed grid into a per-stream ring
     (design 2.2 + 2.6). LOCAL-ONLY (never uploads). One stream per process (a1).
 
     Fail-FAST on config (camera host/creds, cache root unwritable). Fail-SOFT at
     runtime: a bad capture or FS hiccup warns and skips; the loop keeps running.
-    `max_ticks`/`plugin` are injection points for tests.
+    `max_ticks`/`plugin`/`monotonic`/`sleep` are injection points for tests.
     """
     try:
         url, ident, camera_name = _resolve_camera_config(args)
@@ -482,10 +566,34 @@ def _continuous_to_cache(args, *, max_ticks=None, plugin=None):
         logger.error("config error: %s", e)
         return EXIT_CONFIG_ERROR
 
-    logger.info("STAGE 4: continuous -> ring %s (interval=%ds caps: count=%s mb=%s)",
-                sdir, args.continuous, args.cache_max_count, args.cache_max_mb)
+    logger.info("STAGE 4: continuous -> ring %s (interval=%ds caps: count=%s mb=%s "
+                "heartbeat=%ss)", sdir, args.continuous, args.cache_max_count,
+                args.cache_max_mb, args.heartbeat_secs or 60)
+
+    # Open a pywaggle Plugin for the heartbeat (continuous is local-only, so the
+    # heartbeat is the SOLE liveness signal, §3.2). Fail-SOFT: if the Plugin can't
+    # be created (e.g. bare off-node test), run WITHOUT heartbeats -- the cache
+    # still works. Tests inject a fake plugin.
+    own_plugin = False
+    if plugin is None:
+        try:
+            from waggle.plugin import Plugin
+            plugin = Plugin()
+            plugin.__enter__()
+            own_plugin = True
+        except Exception as e:
+            logger.warning("STAGE 5: pywaggle Plugin unavailable (%s); running "
+                           "WITHOUT heartbeats (cache still active).", e)
+            plugin = None
+
+    hb_secs = args.heartbeat_secs if args.heartbeat_secs else 60
+    _mono = monotonic if monotonic is not None else time.monotonic_ns
+    hb = heartbeat_mod.Heartbeat(hb_secs, start_ns=_mono())
 
     def one_tick():
+        status = heartbeat_mod.STATUS_SKIP
+        written = False
+        evicted = 0
         try:
             cap = capture_mod.capture_and_embed_to_tmp(
                 url=url, capture_timeout=args.capture_timeout,
@@ -495,6 +603,7 @@ def _continuous_to_cache(args, *, max_ticks=None, plugin=None):
                 dest_dir=sdir)
         except capture_mod.CaptureError as e:
             logger.warning("STAGE 4: capture skipped: %s", e)
+            hb.record_capture(written=False, evicted=0, status=heartbeat_mod.STATUS_SKIP)
             return
         ring = cache.scan_ring(sdir)
         plan = cache.plan_evictions(ring, cap["final_bytes"],
@@ -502,15 +611,53 @@ def _continuous_to_cache(args, *, max_ticks=None, plugin=None):
         res = cache.commit_capture(sdir, cap["tmp_path"], cap["final_name"], plan)
         for w in res.warnings:
             logger.warning("STAGE 4: %s", w)
+        evicted = len(res.evicted)
         if res.written:
+            written = True
+            status = heartbeat_mod.STATUS_OK
             after = cache.scan_ring(sdir)
             logger.info("STAGE 4: wrote %s size=%d evicted=%d ring_count=%d "
                         "ring_mb=%.3f", cap["final_name"], cap["final_bytes"],
-                        len(res.evicted), after.count,
+                        evicted, after.count,
                         after.total_bytes / cache.BYTES_PER_MB)
+        else:
+            # captured but not written (E3 drop / failed publish) -> fail status
+            status = heartbeat_mod.STATUS_FAIL
+        hb.record_capture(written=written, evicted=evicted, status=status)
 
-    run_capture_loop(interval_s=args.continuous, do_capture=one_tick,
-                     max_ticks=max_ticks)
+    def do_heartbeat(now_ns):
+        ring = cache.scan_ring(sdir)
+        payload = hb.snapshot_and_reset(ring.count, ring.total_bytes, now_ns)
+        logger.info("STAGE 5: heartbeat count=%d bytes=%d written=%d evicted=%d "
+                    "status=%s", payload["count"], payload["bytes"],
+                    payload["written"], payload["evicted"], payload["last_status"])
+        if plugin is None:
+            return
+        meta = {"cache_name": str(cache_name), "camera": str(camera_name),
+                "vsn": str(ident["vsn"])}
+        ts = metadata.now_capture_ts_ns()   # wall-clock ns for the data record
+        for topic, value in ((HB_TOPIC_COUNT, payload["count"]),
+                             (HB_TOPIC_BYTES, payload["bytes"]),
+                             (HB_TOPIC_WRITTEN, payload["written"]),
+                             (HB_TOPIC_EVICTED, payload["evicted"]),
+                             (HB_TOPIC_STATUS, payload["last_status"])):
+            try:
+                plugin.publish(topic, value, timestamp=ts, meta=meta)
+            except Exception as e:
+                # publishing must NEVER kill the loop (fail-soft, §3.3)
+                logger.warning("STAGE 5: heartbeat publish failed for %s: %s",
+                               topic, e)
+
+    try:
+        run_dual_grid_loop(capture_interval_s=args.continuous, do_capture=one_tick,
+                           heartbeat=hb, do_heartbeat=do_heartbeat,
+                           max_captures=max_ticks, monotonic=monotonic, sleep=sleep)
+    finally:
+        if own_plugin and hasattr(plugin, "__exit__"):
+            try:
+                plugin.__exit__(None, None, None)
+            except Exception:
+                pass
     return EXIT_OK
 
 

@@ -13,6 +13,35 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Added
+- Stage 5 (s5a–s5c): continuous-mode cache HEARTBEAT — the sole liveness signal
+  for `--continuous` (local-only, so no upload record implies "alive"). Design
+  §3.2; note in docs/STAGE5-DESIGN-NOTE.md.
+  - `heartbeat.py`: pure `Heartbeat` helper (monotonic grid + between-beat
+    accumulators). `due()`/`next_due_ns()`/`record_capture()`/
+    `snapshot_and_reset()`. Startup beat at slot 0 ("I came up"); a long stall
+    emits exactly ONE catch-up beat, never a burst. +8 tests.
+  - `app.run_dual_grid_loop`: two monotonic grids on one thread (resolution 1B) —
+    sleeps to the nearest of (next capture edge, next heartbeat edge) so the
+    heartbeat holds its ~60s cadence even when sampling is slower, while never
+    emitting >1 beat per slot. Fail-soft callbacks. +5 tests.
+  - Wired into `_continuous_to_cache`: opens a pywaggle Plugin (fail-SOFT — if
+    unavailable, the cache still runs without heartbeats), accumulates
+    written/evicted/last_status per beat, and publishes on the heartbeat grid:
+      * `env.imagesampler.cache.count`   (ring image count)
+      * `env.imagesampler.cache.bytes`   (ring total bytes)
+      * `env.imagesampler.cache.written` (images written since last beat, delta)
+      * `env.imagesampler.cache.evicted` (images evicted since last beat, delta)
+      * `env.imagesampler.cache.last_status` ("ok"/"skip"/"fail"/"none")
+    with `meta={cache_name, camera, vsn}` (all strings). Fires even when every
+    capture fails (the "running but silent" case). Publish is fail-soft (a broken
+    broker never kills the loop). +10 wiring/CLI tests.
+  - New CLI `--heartbeat-secs SECONDS` (continuous-only, default 60, positive-int
+    fail-fast; rejected in one-shot). `summarize()` shows it.
+  - Verified end-to-end vs a mock HTTP camera: startup beat (count=0), then beats
+    on the independent grid with correct delta reset; ring stays bounded; password
+    redacted. 201 tests pass.
+
 ## [0.2.0] - 2026-07-06
 
 Stage 4: `--continuous` local ring-cache producer (design 2.2 + 2.6). Adds a

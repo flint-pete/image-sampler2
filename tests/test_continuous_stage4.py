@@ -106,20 +106,31 @@ def _args(tmp_path, **over):
         "--cache-max-count", "3",
         "--camera-host", "10.0.0.1",
     ])
+    ns.heartbeat_secs = 60          # validate_args normally sets this; set it here
     for k, v in over.items():
         setattr(ns, k, v)
     return ns
 
 
-@pytest.fixture(autouse=True)
-def _no_sleep(monkeypatch):
-    # The loop uses the real clock/sleep in _continuous_to_cache; make sleep a
-    # no-op so grid waits don't slow tests. Scheduling correctness is covered
-    # separately by run_capture_loop tests with an injected FakeClock.
-    monkeypatch.setattr(app.time, "sleep", lambda s: None)
+class _FakeClock:
+    """Virtual monotonic clock (ns); sleep() advances time so the dual-grid loop
+    makes progress without real waiting."""
+    def __init__(self):
+        self.t = 0
+
+    def monotonic_ns(self):
+        return self.t
+
+    def sleep(self, secs):
+        self.t += int(round(secs * 1e9))
 
 
-def test_continuous_writes_into_ring_and_bounds(tmp_path, monkeypatch):
+@pytest.fixture
+def clk():
+    return _FakeClock()
+
+
+def test_continuous_writes_into_ring_and_bounds(tmp_path, monkeypatch, clk):
     monkeypatch.setattr(acquire, "fetch_raw_still", lambda url, t: tiny_jpeg())
     monkeypatch.setenv("CAMERA_USER", "u")
     monkeypatch.setenv("CAMERA_PASSWORD", "p")
@@ -127,7 +138,8 @@ def test_continuous_writes_into_ring_and_bounds(tmp_path, monkeypatch):
     seq = iter(range(1000, 2000))
     monkeypatch.setattr(metadata, "now_capture_ts_ns", lambda: next(seq))
 
-    rc = app._continuous_to_cache(_args(tmp_path), max_ticks=5)
+    rc = app._continuous_to_cache(_args(tmp_path), max_ticks=5,
+                                  monotonic=clk.monotonic_ns, sleep=clk.sleep)
     assert rc == app.EXIT_OK
 
     sdir = os.path.join(str(tmp_path), "job-1", "top")
@@ -141,7 +153,7 @@ def test_continuous_writes_into_ring_and_bounds(tmp_path, monkeypatch):
     assert not any(n.endswith(".tmp") for n in os.listdir(sdir))
 
 
-def test_continuous_fail_soft_capture_skips_but_keeps_looping(tmp_path, monkeypatch):
+def test_continuous_fail_soft_capture_skips_but_keeps_looping(tmp_path, monkeypatch, clk):
     monkeypatch.setenv("CAMERA_USER", "u")
     monkeypatch.setenv("CAMERA_PASSWORD", "p")
     calls = {"n": 0}
@@ -156,7 +168,8 @@ def test_continuous_fail_soft_capture_skips_but_keeps_looping(tmp_path, monkeypa
     seq = iter(range(1000, 2000))
     monkeypatch.setattr(metadata, "now_capture_ts_ns", lambda: next(seq))
 
-    rc = app._continuous_to_cache(_args(tmp_path), max_ticks=3)
+    rc = app._continuous_to_cache(_args(tmp_path), max_ticks=3,
+                                  monotonic=clk.monotonic_ns, sleep=clk.sleep)
     assert rc == app.EXIT_OK
     sdir = os.path.join(str(tmp_path), "job-1", "top")
     ring = cache.scan_ring(sdir)
@@ -164,12 +177,13 @@ def test_continuous_fail_soft_capture_skips_but_keeps_looping(tmp_path, monkeypa
     assert ring.count == 2
 
 
-def test_continuous_cache_name_defaults_to_job(tmp_path, monkeypatch):
+def test_continuous_cache_name_defaults_to_job(tmp_path, monkeypatch, clk):
     monkeypatch.setattr(acquire, "fetch_raw_still", lambda url, t: tiny_jpeg())
     monkeypatch.setenv("CAMERA_USER", "u")
     monkeypatch.setenv("CAMERA_PASSWORD", "p")
     ns = _args(tmp_path, cache_name=None, job="my-job")
-    rc = app._continuous_to_cache(ns, max_ticks=1)
+    rc = app._continuous_to_cache(ns, max_ticks=1,
+                                  monotonic=clk.monotonic_ns, sleep=clk.sleep)
     assert rc == app.EXIT_OK
     # subtree uses the job name as <cache-name>
     assert os.path.isdir(os.path.join(str(tmp_path), "my-job", "top"))
