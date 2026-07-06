@@ -1,55 +1,143 @@
-# Image Sampling
+# image-sampler2
 
-Image sampling samples still images from a camera stream. This is one of the fundamental ways for collecting data that will later be used in training machine learning models. This also gives a guidance on how an inferencing was performed; an image taken approximately at the same time when the inference was performed (on the same scene) visually shows the context.
+`image-sampler2` samples still images from a camera stream. It is an enhanced fork
+of the Sage/Waggle `imagesampler`, redesigned around a **producer/consumer** model:
+the sampler is a cheap, CPU-only **producer** that either uploads a single frame or
+maintains a bounded local **ring cache** that other plugins (inference, triggered
+uploaders) consume on their own schedule.
 
-# How to Use
-To run the program,
+Collecting still images is one of the fundamental ways to gather training data and
+to show the visual context in which an inference was made.
+
+> Status: under staged implementation. **Stage 0** ships the command-line contract
+> and its fail-fast validation only (it validates flags and exits without capturing).
+> Acquisition, capture-time naming + EXIF, upload, the ring cache, and the heartbeat
+> land in later stages. Full design: `docs/imagesampler.flint.analysis.txt`.
+
+---
+
+## Modes (exactly one is required)
+
+`image-sampler2` runs in **one** of two mutually-exclusive modes. You must pass
+exactly one; passing both, or neither, is a fail-fast error.
+
+| Mode | What it does |
+|------|--------------|
+| `--one-shot` | Capture **one** frame, queue it for cloud upload, exit. Upload-only — never writes to the cache. Cadence is external (the scheduler relaunches the pod). Best for "grab one now" and periodic cloud snapshots. |
+| `--continuous SECONDS` | Run forever, capturing on a fixed period of `SECONDS`. **Local-only** — writes each frame into the ring cache and **never uploads**. This is the producer that fills the shared cache for consumers. |
+
+---
+
+## Command-line flags
+
+### Mode (required, choose one)
+
+- **`--one-shot`**
+  Capture exactly one frame, queue it for cloud upload, then exit `0`.
+  Upload-only: it does **not** write to `--cache-dir`. Combine with `--from-cache`
+  to upload a cached frame instead of hitting the camera.
+
+- **`--continuous SECONDS`**
+  Run forever, capturing on a **fixed period** of `SECONDS` (must be a positive
+  integer). Local-only: writes into the ring cache and never uploads. Requires
+  `--cache-dir`, `--cache-name`, and at least one cache cap.
+
+### Source
+
+- **`--stream STREAM`** *(required, repeatable)*
+  A named camera stream (e.g. `top_camera`, `bottom_camera`) or a raw URL
+  (`rtsp://IP:PORT/...`). Repeat `--stream` to sample multiple streams; each runs
+  in its own worker process. At least one is required.
+
+- **`--name NAME`** *(optional, repeatable)*
+  Human label to report for a stream. If given, the number and order of `--name`
+  values **must match** the `--stream` values. If omitted, the stream id is used
+  as the name.
+
+- **`--from-cache DIR`** *(one-shot only)*
+  Instead of hitting the camera, upload the **newest** image already present in
+  the cache directory `DIR` (populated by a `--continuous` producer). Does not
+  touch the camera, does not write, does not evict. This is the composable
+  "periodic uploader": pair a continuous producer with a scheduled
+  `--one-shot --from-cache` uploader. Only valid with `--one-shot`.
+
+### Ring cache (continuous only)
+
+- **`--cache-dir DIR`** *(required with `--continuous`)*
+  Directory that holds the per-stream ring cache. Must already exist and be
+  writable (fail-fast otherwise). Each stream writes into its own subdirectory
+  `DIR/<camera>/`.
+
+- **`--cache-name NAME`** *(required with `--continuous`)*
+  Stable, filesystem-safe identifier for this cache instance, so consumer plugins
+  can find it and two different configurations on the same camera do not collide.
+  Allowed characters: letters, digits, dot (`.`), dash (`-`), underscore (`_`).
+  No path separators or whitespace.
+
+- **`--cache-max-count N`** *(continuous; at least one cap required)*
+  Maximum number of images kept **per stream** in the ring. When exceeded, the
+  oldest images are evicted first.
+
+- **`--cache-max-mb MB`** *(continuous; at least one cap required)*
+  Maximum total size of the per-stream ring, in decimal megabytes (10^6 bytes).
+  When exceeded, the oldest images are evicted first.
+
+  You may set one or both caps; eviction triggers when **either** would be
+  exceeded. At least one cap is required with `--continuous` — an unbounded cache
+  is not allowed.
+
+---
+
+## Fail-fast rules
+
+Invalid flag combinations are rejected **before any work** with a clear message and
+a nonzero exit code (config errors exit `2`):
+
+- Not exactly one mode (`--one-shot` XOR `--continuous`).
+- `--continuous SECONDS` not a positive integer.
+- No `--stream` given.
+- `--name` count does not match `--stream` count.
+- Cache flags (`--cache-dir`, `--cache-name`, `--cache-max-count`, `--cache-max-mb`)
+  used with `--one-shot` (they are continuous-only).
+- `--from-cache` used with `--continuous` (it is one-shot-only).
+- `--continuous` without `--cache-dir`, without `--cache-name`, or with no cap.
+- `--cache-dir` does not exist or is not writable.
+- `--cache-name` contains illegal characters (path separators, spaces, etc.).
+- A cache cap set to a non-positive value.
+
+---
+
+## Usage examples
+
+Capture one image and upload it:
 
 ```bash
-# Captures and publishes an image from the camera stream
-python3 app.py --stream bottom_camera
+python3 app.py --one-shot --stream top_camera
 ```
 
-### Capturing an Image from Multiple Streams
+Capture one image from each of two streams, with labels:
 
 ```bash
-python3 app.py \
-  --stream bottom_camera \
-  --stream top_camera
+python3 app.py --one-shot \
+  --stream bottom_camera --name street \
+  --stream top_camera    --name sky
 ```
 
-### Naming streams
+Run a continuous producer that keeps the last 500 images (or 1 GB) per stream:
 
 ```bash
-# The count and order of the names
-# must match with given streams
-python3 app.py \
-  --name street \
-  --stream bottom_camera \
-  --name sky \
-  --stream top_camera
+python3 app.py --continuous 60 \
+  --stream top_camera \
+  --cache-dir /run/waggle/cache \
+  --cache-name hummingcam \
+  --cache-max-count 500 \
+  --cache-max-mb 1000
 ```
 
-### Capturing and Saving Images Locally
+Periodically upload the newest cached frame (the composition pattern — pair with a
+continuous producer, schedule this on a cron cadence):
 
 ```bash
-# This does not publish images to the cloud,
-# instead they are saved locally
-python3 app.py \
-  --stream bottom_camera \
-  --out-dir /path/to/local/storage
-```
-
-The directory will have a directory for each stream and be structured with subdirectories helping to organize the images.
-
-> NOTE: The directory structure recognizes those slashes (/) when creating subdirectories if the stream is a URL like rtsp://IP:PORT/stream. It will be /OUTDIR/RTSP:/IP:PORT/...
-
-### Capturing Images using Cronjob
-
-```bash
-# Capturing an image from the stream every hour.
-# Note that the program runs forever.
-python3 app.py \
-  --stream bottom_camera \
-  --cronjob "0 * * * *"
+python3 app.py --one-shot --stream top_camera \
+  --from-cache /run/waggle/cache/hummingcam/top_camera
 ```

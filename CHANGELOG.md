@@ -13,7 +13,29 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Added
+- Stage 0 (CLI contract + fail-fast validation). Rewrote app.py's command-line
+  interface to the new two-mode design (docs 2.2/2.6/2.8/2.12):
+  - Required, mutually-exclusive mode group: --one-shot | --continuous SECONDS.
+  - Source flags: --stream (repeatable, required), --name (repeatable, optional,
+    count must match --stream), --from-cache DIR (one-shot only).
+  - Ring-cache flags (continuous only): --cache-dir, --cache-name,
+    --cache-max-count, --cache-max-mb.
+  - Pure, unit-testable validate_args() enforcing every fail-fast rule (both/
+    neither mode, non-positive interval, missing stream, name/stream mismatch,
+    cache flags in one-shot, --from-cache in continuous, continuous missing
+    cache-dir/cache-name/cap, cache-dir not existing/writable, unsafe cache-name,
+    non-positive caps). Config errors exit with code 2 (distinct from runtime).
+  - Stage 0 performs NO capture: it validates and prints the config, exits 0.
+  - tests/test_cli_stage0.py: 45 pure tests (no camera/network) covering every
+    bad and good flag combination; all pass. Verified real subprocess exit codes.
+  - Added .gitignore (venv, __pycache__, pytest cache, sample.jpg).
+
 ### Changed
+- ecr-meta/ecr-science-description.md: rewritten to document the new two-mode CLI
+  and every flag (what each does, which mode it belongs to) plus the fail-fast
+  rules and usage examples (one-shot, multi-stream, continuous producer,
+  --from-cache composition).
 - Analysis doc 2.10: added a "HOW THE CAPTURE-TS SWITCH WORKS" note answering how
   we move the filename prefix from upload-time to capture-time given that pywaggle
   assembles the name. Grounded in the current pywaggle source: upload_file() does
