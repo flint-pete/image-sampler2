@@ -41,6 +41,25 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   - Verified end-to-end vs a mock HTTP camera: startup beat (count=0), then beats
     on the independent grid with correct delta reset; ring stays bounded; password
     redacted. 201 tests pass.
+- Stage 5d: ON-NODE verification on H00F (Thor), built/imported as
+  image-sampler2:0.3.0-rc (Dockerfile now COPYs heartbeat.py). Two runs via
+  `sudo pluginctl run --selector zone=core --env-from <creds> -v <host>:/cache`:
+  - HAPPY PATH (live hummingcam, interval=10s, --heartbeat-secs 15, cap=3):
+    STAGE 5 beats fired on the independent 15s grid (not the 10s capture grid),
+    startup beat count=0/status=none, then count climbed 0→2→3 and held at the
+    cap; written/evicted deltas reset each beat. Dual-grid 1B confirmed on real
+    hardware.
+  - DEAD CAMERA (unreachable IP, --capture-timeout 3, heartbeat 10s): every
+    capture failed ("Connection refused") yet heartbeats KEPT FIRING on the 10s
+    grid with count=0/status=skip — the "running but silent" liveness case the
+    heartbeat exists to reveal, proven live.
+  - DATA-PLANE: `env.imagesampler.cache.*` records are queryable from the Sage
+    data API (data.sagecontinuum.org). Beehive attached identity downstream
+    (vsn=H00F, node=00004cbb...) to our in-pod placeholder vsn=NODE, exactly as
+    designed; meta carries cache_name/camera + Beehive host/job/plugin/task/zone.
+  - Creds env-only (--env-from a mode-600 file, shredded after; pw never on argv).
+    WES scheduler stack unharmed; node cleaned (pods removed, scratch/build/creds
+    deleted).
 
 ## [0.2.0] - 2026-07-06
 
