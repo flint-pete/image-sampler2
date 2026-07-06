@@ -13,6 +13,13 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-06
+
+Stage 4: `--continuous` local ring-cache producer (design 2.2 + 2.6). Adds a
+drift-free periodic capture loop that writes v2-named, EXIF-embedded frames into
+a bounded, per-stream ring on local disk. Local-only (never uploads); one plugin
+instance per camera stream. Verified on-node against the live H00F hummingcam.
+
 ### Added
 - Stage 4d: ON-NODE verification of the `--continuous` producer on H00F (Thor)
   against the live hummingcam (Reolink RLC-811A, 10.107.0.221:10000), via
