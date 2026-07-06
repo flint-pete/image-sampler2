@@ -323,9 +323,11 @@ def summarize(args):
 def _one_shot_from_camera(args):
     """One-shot from camera -> Beehive upload (Stage 3).
 
-    Resolves node identity (flags override the /etc/waggle node manifest), builds
-    the Reolink URL from env-only credentials, then captures + embeds + uploads
-    with capture-time keying. Fail-fast on config; fail-soft on runtime.
+    Resolves node identity (flags override; runtime lookup is a sage-ci
+    placeholder today), builds the Reolink URL from env-only credentials, then
+    captures + embeds + uploads with capture-time keying. Fail-fast on config
+    (missing camera host/creds); fail-soft on runtime. Node identity is never
+    fatal -- Beehive attributes the node via routing.
     """
     if not args.camera_host:
         logger.error("config error: --camera-host (or env CAMERA_HOST) is required "
@@ -339,14 +341,22 @@ def _one_shot_from_camera(args):
                      "environment (credentials are never passed as flags)")
         return EXIT_CONFIG_ERROR
 
-    # Node identity: flags override the on-node manifest (fleet-portable default).
+    # Node identity. Flags override; otherwise resolved via nodemeta (runtime
+    # lookup is a sage-ci PLACEHOLDER today -> falls back to a placeholder VSN and
+    # omits GPS). Identity is NEVER fatal: Beehive attributes the node via routing
+    # regardless; vsn only shapes the v2 filename, lat/lon only enrich EXIF GPS.
     ident = nodemeta.resolve_identity(
         vsn=args.vsn, node_id=args.node_id, lat=args.lat, lon=args.lon,
         manifest_path=args.node_manifest)
-    if not ident["vsn"]:
-        logger.error("config error: node VSN could not be resolved (no --vsn and no "
-                     "/etc/waggle/node-manifest-v2.json). Required for the v2 name.")
-        return EXIT_CONFIG_ERROR
+    if ident["vsn_is_placeholder"]:
+        logger.warning("node VSN not resolvable at runtime (sage-ci runtime VSN "
+                       "call not yet available); using PLACEHOLDER vsn=%r. "
+                       "Beehive still attributes the real node via routing.",
+                       ident["vsn"])
+    if ident["lat"] is None or ident["lon"] is None:
+        logger.warning("node GPS not resolvable at runtime (sage-ci runtime GPS "
+                       "call not yet available); omitting EXIF GPS (not faking "
+                       "coordinates).")
 
     camera_name = (args.name[0] if args.name else args.stream[0])
 

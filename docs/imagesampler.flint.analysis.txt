@@ -704,36 +704,45 @@ injection); see 4.6.
 EXIF-INJECTION LIBRARY: piexif (RESOLVED, see 4.4).
 
 ───────────────────────────────
-2.11b  NODE IDENTITY SOURCING  [RESOLVED 2026-07-06, verified on H00F]
+2.11b  NODE IDENTITY SOURCING  [RESOLVED 2026-07-06, verified via full Beehive round-trip on H00F]
 ───────────────────────────────
 Where do vsn / node_id / gps_lat / gps_lon (fields 1,2,11) come from on a REAL
-node, fleet-wide? INVESTIGATED against pywaggle source + a live H00F pod:
-  - Node identity is NOT in pod environment variables. pywaggle reads only
-    messaging plumbing vars (WAGGLE_PLUGIN_USERNAME/PASSWORD/HOST/PORT,
-    WAGGLE_APP_ID, WAGGLE_PLUGIN_UPLOAD_PATH, PYWAGGLE_LOG_DIR). It never reads a
-    node VSN or GPS. The only node-ish pod env var is KUBENODE=<hwid>.<compute>
-    (hardware id, not the VSN).
-  - The authoritative source is FILES under /etc/waggle/ (world-readable):
-      node-manifest-v2.json : {"vsn","name"(=node_id),"gps_lat","gps_lon",...}
-      vsn                   : e.g. "H00F"
-      node-id               : e.g. "00004CBB4701D16C"
-  - Node identity is ALSO attached downstream by Beehive via message routing, so
-    the plugin technically need not send it — but we still embed it in the file's
-    EXIF so a downloaded bare file is self-describing (2.11).
-RESOLUTION (nodemeta.py): resolve per field with precedence
-  explicit flag  >  node-manifest-v2.json  >  /etc/waggle/vsn|node-id (vsn/id only).
-Manifest path overridable via --node-manifest / env WAGGLE_NODE_MANIFEST (testing).
-Missing vsn is fatal for the v2 name (fail-fast); missing lat/lon just omits EXIF
-GPS. This makes the SAME image correct on any of the ~100 nodes with NO per-node
-config — verified on H00F: resolve_identity() returned vsn=H00F,
-node_id=00004CBB4701D16C, lat=41.7179852752395, lon=-87.98271513806043 with zero
-flags. (Supersedes an earlier wrong assumption that WAGGLE_NODE_VSN/LAT/LON env
-vars exist; they do not.)
-UPLOAD CONTRACT (pywaggle uploader, VERIFIED from source + on-node):
-  upload_file(path, meta, timestamp) stages root/<timestamp>-<sha1sum>/{data,meta};
+node, fleet-wide? INVESTIGATED four ways (pywaggle 0.56 source, pywaggle docs, a
+live `ses` plugin pod, and the existing yolo/bioclip plugins):
+  - There is NO supported way for a plugin to learn its own VSN or GPS at runtime.
+    pywaggle 0.56 has no gps/vsn/location/node API (source grep: zero hits); its
+    docs expose only publish/subscribe/upload_file.
+  - A live `ses` plugin pod has ONLY WAGGLE_PLUGIN_* + WAGGLE_SCOREBOARD env and
+    mounts ONLY /run/waggle/{uploads,data-config.json}. /etc/waggle/ is a node-HOST
+    path and is NOT mounted into pods, so node-manifest-v2.json is UNREADABLE from
+    inside a plugin container. (It is readable when you run the code directly on the
+    node host — dev/spikes only — which is why an earlier host-run test misled us.)
+  - The existing yolo/bioclip plugins do NOT self-identify at all: they upload_file()
+    and let Beehive attach node identity DOWNSTREAM via message routing.
+CONCLUSION: the plugin is node-agnostic by design; Beehive stamps vsn + node_id
+from routing. VERIFIED in the Beehive data API: an image-sampler2 upload whose
+FILENAME used the placeholder vsn "NODE" still came back with meta {"vsn":"H00F",
+"node":"00004cbb4701d16c"} — attribution is correct regardless of what the plugin
+knows.
+RESOLUTION (nodemeta.py), per-field precedence:
+  explicit flag  >  runtime lookup  >  node manifest / /etc/waggle files (host-only)
+  - Runtime lookup is a PLACEHOLDER today (grep "TODO(sage-ci)"): the Sage CI team
+    is adding runtime "GPS call" + "VSN call" APIs (expected within days of
+    2026-07-06). When they land, implement nodemeta._runtime_identity() and delete
+    the placeholder; NOTHING downstream changes (the identity dict shape is stable).
+  - If vsn is still unknown -> PLACEHOLDER_VSN ("NODE", env IS2_PLACEHOLDER_VSN),
+    flagged vsn_is_placeholder=True; a WARNING is logged. Identity is NEVER fatal.
+  - If lat/lon are unknown -> OMITTED from EXIF GPS. We NEVER fabricate coordinates
+    (fake geo would corrupt science data; absent is correct).
+UPLOAD CONTRACT (pywaggle uploader, VERIFIED from source + full round-trip):
+  upload_file(path, meta, timestamp) stages root/<timestamp>-<sha1sum>/{data,meta}
+  on-node, delivered to Beehive object store at storage.sagecontinuum.org.
   timestamp = timestamp or get_timestamp(), so timestamp=capture_ts keys the object
-  by CAPTURE time (2.10). meta values MUST all be strings (valid_meta). We add
-  capture_timestamp/upload_timestamp/unique_id/vsn/etc. as string labels.
+  by CAPTURE time (2.10) — CONFIRMED: the Beehive record's timestamp ==
+  capture_timestamp == the filename prefix. meta values MUST all be strings
+  (valid_meta); Beehive adds vsn/node/host/zone/job/task. We add
+  capture_timestamp/upload_timestamp/unique_id/camera/acquisition_path/
+  schema_version as string labels.
 
 ───────────────────────────────
 2.12  SHARED CROSS-PLUGIN CACHE (consumer triggers)  [LOCKED, w/ open items]

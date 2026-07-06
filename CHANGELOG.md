@@ -14,6 +14,27 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Node identity placeholder + FULL Beehive round-trip verification (2026-07-06).
+  - Verified there is NO runtime way for a plugin to learn its own VSN/GPS
+    (pywaggle 0.56 source + docs + live ses pod + yolo/bioclip precedent). /etc/waggle
+    is a node-HOST path NOT mounted into pods; node identity is attached DOWNSTREAM
+    by Beehive via routing.
+  - nodemeta.py: added a clearly-marked sage-ci PLACEHOLDER runtime lookup
+    (grep "TODO(sage-ci)") to be replaced when the Sage CI team ships runtime
+    GPS/VSN calls. Precedence: explicit flag > runtime lookup > manifest/etc-waggle
+    (host-only). Unknown vsn -> PLACEHOLDER_VSN ("NODE", env IS2_PLACEHOLDER_VSN),
+    flagged vsn_is_placeholder + WARNING. Unknown lat/lon -> OMITTED from EXIF
+    (never fabricated). Identity is NO LONGER fatal.
+  - app.py: one-shot path no longer fails on unresolved vsn; logs placeholder/GPS
+    warnings; always proceeds (Beehive attributes the node).
+  - tests: +5 placeholder/runtime tests; 111 total, all pass.
+  - VERIFIED end-to-end: built arm64 image (podman, py3.8 + pywaggle 0.56.3 +
+    piexif), imported into k3s containerd, ran via `pluginctl run` (creds via
+    --env-from, never argv) in a real WES pod on H00F. The upload landed in the
+    Beehive data API: record timestamp == capture_timestamp == filename prefix
+    (capture-time keying); filename used placeholder vsn "NODE" yet Beehive meta
+    correctly shows {"vsn":"H00F","node":"00004cbb4701d16c"}; all string meta
+    (unique_id/upload_timestamp/acquisition_path/schema_version=sage-img-1) present.
 - Stage 3 (one-shot upload path; first end-to-end Beehive result). Verified on
   H00F 2026-07-06.
   - upload.py one_shot_upload(): grab -> embed -> pywaggle upload_file(path, meta,

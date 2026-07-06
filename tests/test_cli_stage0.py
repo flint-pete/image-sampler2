@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import app  # noqa: E402
+import nodemeta  # noqa: E402
 
 
 def parse(argv):
@@ -288,14 +289,32 @@ def test_main_one_shot_requires_creds(monkeypatch):
     assert rc == app.EXIT_CONFIG_ERROR
 
 
-def test_main_one_shot_requires_vsn(tmp_path, monkeypatch):
-    # creds present but VSN unresolvable (no --vsn, empty manifest) -> config error.
+def test_main_one_shot_placeholder_vsn_still_uploads(tmp_path, monkeypatch):
+    # creds present, vsn unresolvable (empty manifest, no --vsn) -> NOT a config
+    # error anymore: identity falls back to a placeholder vsn and the upload still
+    # runs (Beehive attributes the node via routing). sage-ci runtime calls pending.
+    import upload as _upl
     monkeypatch.setenv("CAMERA_USER", "admin")
     monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+    monkeypatch.setattr(nodemeta, "DEFAULT_VSN_FILE", str(tmp_path / "no-vsn"))
+    monkeypatch.setattr(nodemeta, "DEFAULT_NODE_ID_FILE", str(tmp_path / "no-id"))
+    monkeypatch.setattr(nodemeta, "PLACEHOLDER_VSN", "NODE")
+    seen = {}
+
+    def fake_upload(**kw):
+        seen.update(kw)
+        return True, {"object_name": "1-v2-NODE-top_camera.jpg", "final_bytes": 10,
+                      "unique_id": "abc123", "capture_ts_ns": 1,
+                      "grab_ns": 1e6, "embed_ns": 1e6, "upload_ns": 1e6}
+
+    monkeypatch.setattr(_upl, "one_shot_upload", fake_upload)
     empty = tmp_path / "no-manifest.json"
     rc = app.main(["--one-shot", "--stream", "top_camera", "--camera-host", "10.0.0.9",
                    "--node-manifest", str(empty)])
-    assert rc == app.EXIT_CONFIG_ERROR
+    assert rc == app.EXIT_OK
+    assert seen["vsn"] == "NODE"          # placeholder passed through to upload
+    assert seen["lat"] is None            # gps omitted, not faked
+    assert seen["lon"] is None
 
 
 def test_main_one_shot_dispatch_ok(monkeypatch):

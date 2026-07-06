@@ -65,12 +65,48 @@ def test_explicit_overrides_manifest(tmp_path):
     assert ident["node_id"] == "00004CBB4701D16C"  # not overridden -> manifest
 
 
-def test_resolve_no_sources_all_none(tmp_path, monkeypatch):
-    # point the /etc/waggle fallbacks at nonexistent paths so nothing resolves
+def test_resolve_no_sources_uses_placeholder(tmp_path, monkeypatch):
+    # No explicit args, no runtime lookup (placeholder returns None), no manifest,
+    # no /etc/waggle files -> vsn falls back to PLACEHOLDER_VSN, gps omitted.
     monkeypatch.setattr(nodemeta, "DEFAULT_VSN_FILE", str(tmp_path / "no-vsn"))
     monkeypatch.setattr(nodemeta, "DEFAULT_NODE_ID_FILE", str(tmp_path / "no-id"))
+    monkeypatch.setattr(nodemeta, "PLACEHOLDER_VSN", "NODE")
     ident = nodemeta.resolve_identity(manifest_path=str(tmp_path / "no-manifest.json"))
-    assert ident == {"vsn": None, "node_id": None, "lat": None, "lon": None}
+    assert ident["vsn"] == "NODE"
+    assert ident["vsn_is_placeholder"] is True
+    assert ident["node_id"] is None
+    assert ident["lat"] is None and ident["lon"] is None  # never faked
+
+
+def test_resolved_vsn_not_flagged_placeholder(tmp_path):
+    # A real resolved vsn (from manifest) must NOT be flagged as placeholder.
+    path = write_manifest(tmp_path, MANIFEST)
+    ident = nodemeta.resolve_identity(manifest_path=path)
+    assert ident["vsn"] == "H00F"
+    assert ident["vsn_is_placeholder"] is False
+
+
+def test_explicit_vsn_not_flagged_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setattr(nodemeta, "DEFAULT_VSN_FILE", str(tmp_path / "no-vsn"))
+    ident = nodemeta.resolve_identity(
+        vsn="W999", manifest_path=str(tmp_path / "no-manifest.json"))
+    assert ident["vsn"] == "W999"
+    assert ident["vsn_is_placeholder"] is False
+
+
+def test_runtime_identity_is_placeholder_today():
+    # TODO(sage-ci): when the runtime GPS/VSN calls land, _runtime_identity() will
+    # return real values and THIS test should be updated. Today it must be inert.
+    rt = nodemeta._runtime_identity()
+    assert rt == {"vsn": None, "node_id": None, "lat": None, "lon": None}
+
+
+def test_placeholder_vsn_env_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(nodemeta, "DEFAULT_VSN_FILE", str(tmp_path / "no-vsn"))
+    monkeypatch.setattr(nodemeta, "PLACEHOLDER_VSN", "TESTVSN")
+    ident = nodemeta.resolve_identity(manifest_path=str(tmp_path / "no-manifest.json"))
+    assert ident["vsn"] == "TESTVSN"
+    assert ident["vsn_is_placeholder"] is True
 
 
 def test_vsn_file_fallback(tmp_path, monkeypatch):
