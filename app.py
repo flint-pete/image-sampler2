@@ -20,6 +20,8 @@ import logging
 import os
 import sys
 
+import acquire
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(message)s',
@@ -32,6 +34,7 @@ logger = logging.getLogger("image-sampler2")
 # scheduler/operator can tell "you invoked me wrong" from a runtime failure.
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 2
+EXIT_CAPTURE_ERROR = 3
 
 
 class ConfigError(Exception):
@@ -124,6 +127,33 @@ def build_parser():
         help='CONTINUOUS ONLY. Max total size (decimal MB, 10^6 bytes) of the '
              'per-stream ring. Oldest are evicted first. At least one of '
              '--cache-max-count / --cache-max-mb is REQUIRED with --continuous.')
+
+    # --- camera connection (native-still fetch, design 2.3/4.3) ----------------
+    # Address may come from flags or env (CAMERA_HOST/PORT/CHANNEL). Credentials
+    # are ENV-ONLY (CAMERA_USER / CAMERA_PASSWORD) and never a flag, so they do
+    # not appear in process args / shell history / logs.
+    parser.add_argument(
+        '--camera-host', dest='camera_host', metavar='HOST',
+        action='store', default=os.environ.get('CAMERA_HOST'), type=str,
+        help='Camera IP/host for the native-still fetch. Defaults to env '
+             'CAMERA_HOST. Required for a from-camera capture.')
+    parser.add_argument(
+        '--camera-port', dest='camera_port', metavar='PORT',
+        action='store', default=int(os.environ.get('CAMERA_PORT', "80")), type=int,
+        help='Camera HTTP port (default env CAMERA_PORT or 80).')
+    parser.add_argument(
+        '--camera-channel', dest='camera_channel', metavar='N',
+        action='store', default=int(os.environ.get('CAMERA_CHANNEL', "0")), type=int,
+        help='Camera channel (default env CAMERA_CHANNEL or 0).')
+    parser.add_argument(
+        '--capture-timeout', dest='capture_timeout', metavar='SECONDS',
+        action='store', default=float(os.environ.get('CAPTURE_TIMEOUT', "10")), type=float,
+        help='Hard timeout (seconds) for a single capture (default 10).')
+    parser.add_argument(
+        '--out-path', dest='out_path', metavar='PATH',
+        action='store', default=None, type=str,
+        help='STAGE 1 ONLY (temporary): write the captured raw JPEG to PATH. '
+             'Later stages replace this with v2 naming + upload/cache.')
 
     return parser
 
@@ -249,6 +279,50 @@ def summarize(args):
             f"cache_name={args.cache_name} caps=[{', '.join(caps)}]")
 
 
+def _one_shot_from_camera_stage1(args):
+    """STAGE 1: capture ONE raw still from the camera and save it to --out-path.
+
+    Reads credentials from the environment (CAMERA_USER / CAMERA_PASSWORD) --
+    never from flags. Builds the Reolink native-still URL and saves the raw bytes
+    untouched (no naming/EXIF/upload yet -- Stage 2/3). Returns an exit code.
+    """
+    if not args.camera_host:
+        logger.error("config error: --camera-host (or env CAMERA_HOST) is required "
+                     "for a from-camera capture")
+        return EXIT_CONFIG_ERROR
+    if not args.out_path:
+        logger.error("config error: --out-path is required in Stage 1 to save the "
+                     "captured frame (temporary; later stages name/upload it)")
+        return EXIT_CONFIG_ERROR
+
+    user = os.environ.get("CAMERA_USER")
+    password = os.environ.get("CAMERA_PASSWORD")
+    if not user or password is None:
+        logger.error("config error: set CAMERA_USER and CAMERA_PASSWORD in the "
+                     "environment (credentials are never passed as flags)")
+        return EXIT_CONFIG_ERROR
+
+    try:
+        url = acquire.build_reolink_snap_url(
+            args.camera_host, args.camera_port, user, password, args.camera_channel)
+    except ValueError as e:
+        logger.error("config error: %s", e)
+        return EXIT_CONFIG_ERROR
+
+    try:
+        out = acquire.capture_still_to_path(url, args.out_path, args.capture_timeout)
+    except acquire.CaptureTimeout as e:
+        logger.error("capture timeout: %s", e)
+        return EXIT_CAPTURE_ERROR
+    except acquire.CaptureError as e:
+        logger.error("capture error: %s", e)
+        return EXIT_CAPTURE_ERROR
+
+    size = os.path.getsize(out)
+    logger.info("STAGE 1: captured raw still -> %s (%d bytes)", out, size)
+    return EXIT_OK
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -258,10 +332,22 @@ def main(argv=None):
         logger.error("config error: %s", e)
         return EXIT_CONFIG_ERROR
 
-    # STAGE 0: configuration is valid. Later stages wire acquisition/upload/cache
-    # in here. For now, report the validated config and exit cleanly.
     logger.info("image-sampler2 config OK: %s", summarize(args))
-    logger.info("STAGE 0: CLI/validation only -- no capture performed yet.")
+
+    # Dispatch. Stage 1 implements one-shot-from-camera (single stream). Other
+    # paths are validated but not yet wired (later stages).
+    if args.one_shot and args.from_cache is None:
+        if len(args.stream) > 1:
+            logger.warning("STAGE 1: multi-stream not wired yet; capturing the "
+                           "first stream only (%s)", args.stream[0])
+        return _one_shot_from_camera_stage1(args)
+
+    if args.one_shot and args.from_cache is not None:
+        logger.info("STAGE 1: --from-cache path not implemented yet (Stage 6).")
+        return EXIT_OK
+
+    # continuous
+    logger.info("STAGE 1: --continuous path not implemented yet (Stage 4).")
     return EXIT_OK
 
 

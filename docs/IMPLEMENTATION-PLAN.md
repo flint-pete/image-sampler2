@@ -64,30 +64,35 @@ confirmed (0 valid / 2 config). ecr-meta flag docs written. `.gitignore` added.
 
 ---
 
-## Stage 1 — Single real capture → save raw bytes  `[TODO]`  (the acquisition spine)
+## Stage 1 — Single real capture → save raw bytes  `[DONE]`  (the acquisition spine)
 
-**Features:**
-- Raw-native-still fetch (2.3 primary path). Start with Reolink `cmd=Snap` on H00F
-  (confirmed working, 4.3); structure the fetch so other vendors/fallback slot in.
-- Save the RAW JPEG bytes UNTOUCHED (no decode/re-encode) to a `.tmp` then to a
-  final path (atomic temp→rename groundwork for 2.6).
-- Bounded capture with a hard timeout (2.2); on timeout/error, fail cleanly.
-- No EXIF, no v2 name yet — just "get real bytes from the real camera, write them."
-- Fallback path (OpenCV via pywaggle `Camera()`) may be stubbed/deferred to keep
-  the stage small; if stubbed, document it.
+Commit: see git log (Stage 1). Verified on H00F 2026-07-06.
 
-**Interlinked rationale:** isolates the hardest external dependency (camera
-acquisition) before piling metadata on top.
+**Shipped:**
+- `acquire.py`: native-still fetch (`build_reolink_snap_url` with query-param auth,
+  no %-encode of password punctuation; `fetch_raw_still` with a hard timeout;
+  raw bytes saved UNTOUCHED via `save_bytes_atomic` temp→fsync→os.replace). JPEG
+  validated by SOI/EOI (non-JPEG auth-error blobs rejected, not saved). Timeout vs
+  generic error mapped to distinct exceptions; password redacted in logs. OpenCV
+  fallback stubbed (raises NotImplementedError).
+- `app.py`: one-shot-from-camera path wired. Camera address via `--camera-host`/
+  `--camera-port`/`--camera-channel` (env fallbacks CAMERA_HOST/PORT/CHANNEL);
+  credentials ENV-ONLY (CAMERA_USER/CAMERA_PASSWORD), never a flag. `--capture-
+  timeout`; `--out-path` (Stage-1 temporary sink, replaced by v2 naming in Stage 2).
+  New exit code EXIT_CAPTURE_ERROR=3.
+- Tests: `tests/test_acquire_stage1.py` (26) + Stage-1 dispatch tests in the CLI
+  suite; 74 total, all mocked (no camera/network), all pass.
 
-**Verify (on-node, H00F):**
-- A valid JPEG lands on disk; dimensions/marker scan match 2.4 evidence for the
-  Reolink (bare JPEG, no EXIF).
-- Timeout path fails soft/clean (simulate by pointing at an unreachable URL).
-- Access: `ssh beckman@node-H00F.sage`; `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
+**Verified on-node (H00F, one live capture):**
+- Valid JPEG, 1,226,354 bytes, 3840×2160; SOI ffd8 / EOI ffd9; no `.tmp` litter.
+- Design 2.4 CONFIRMED: Reolink `cmd=Snap` returns a BARE JPEG — only DQT/SOF0/DHT,
+  NO APP0/JFIF, NO APP1/EXIF, NO COM. No foreign camera segments to preserve on
+  this camera (so Stage 2 must inject all provenance metadata itself).
+- Timeout path: unreachable host → clean CaptureTimeout after the bounded interval,
+  rc=3, no file, no `.tmp`.
 
-**Open/risks:** camera creds parameterized (never hardcode/expose); avoid Reolink
-`remain_times` lockout (don't hammer). Camera is unreachable from Flint — test
-on-node only.
+**Note (credentials):** the admin password is supplied by Pete and passed via stdin
+on-node (kept out of argv/history/files). Not stored in the repo or memory.
 
 ---
 

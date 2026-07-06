@@ -61,6 +61,20 @@ exactly one; passing both, or neither, is a fail-fast error.
   "periodic uploader": pair a continuous producer with a scheduled
   `--one-shot --from-cache` uploader. Only valid with `--one-shot`.
 
+### Camera connection (native-still fetch)
+
+The camera address may be given by flag or environment variable. **Credentials
+are environment-only** (`CAMERA_USER` / `CAMERA_PASSWORD`) and are never accepted
+as flags, so they do not appear in process arguments, shell history, or logs (the
+password is redacted in log output).
+
+- **`--camera-host HOST`** — camera IP/host for the native-still fetch. Defaults to
+  env `CAMERA_HOST`. Required for a from-camera capture.
+- **`--camera-port PORT`** — camera HTTP port (default env `CAMERA_PORT` or `80`).
+- **`--camera-channel N`** — camera channel (default env `CAMERA_CHANNEL` or `0`).
+- **`--capture-timeout SECONDS`** — hard timeout for a single capture (default `10`).
+- **`CAMERA_USER` / `CAMERA_PASSWORD`** *(environment only)* — camera credentials.
+
 ### Ring cache (continuous only)
 
 - **`--cache-dir DIR`** *(required with `--continuous`)*

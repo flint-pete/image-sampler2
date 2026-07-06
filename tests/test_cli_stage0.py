@@ -10,6 +10,7 @@
 
 import os
 import sys
+from unittest import mock
 
 import pytest
 
@@ -237,8 +238,17 @@ def test_continuous_good_cache_name_ok(tmp_path, ok_name):
 # main() exit codes (fail-fast config error -> distinct nonzero code)
 # ---------------------------------------------------------------------------
 
-def test_main_ok_one_shot():
-    assert app.main(["--one-shot", "--stream", "top_camera"]) == app.EXIT_OK
+def test_main_ok_one_shot_requires_camera_config():
+    # As of Stage 1, one-shot-from-camera needs a camera host (flag or env). With
+    # neither, it fails fast as a config error rather than silently exiting OK.
+    import os as _os
+    saved = _os.environ.pop("CAMERA_HOST", None)
+    try:
+        rc = app.main(["--one-shot", "--stream", "top_camera"])
+    finally:
+        if saved is not None:
+            _os.environ["CAMERA_HOST"] = saved
+    assert rc == app.EXIT_CONFIG_ERROR
 
 
 def test_main_ok_continuous(tmp_path):
@@ -259,6 +269,52 @@ def test_main_argparse_error_exits(tmp_path):
     # missing mode -> argparse SystemExit with code 2
     with pytest.raises(SystemExit):
         app.main(["--stream", "a"])
+
+
+def test_main_stage1_capture_dispatch(tmp_path, monkeypatch):
+    # one-shot-from-camera with camera config + env creds -> calls acquire and
+    # returns OK. acquire is mocked so no real network/camera is touched.
+    import acquire as _acq
+    dst = str(tmp_path / "cap.jpg")
+    monkeypatch.setenv("CAMERA_USER", "admin")
+    monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+
+    calls = {}
+
+    def fake_capture(url, path, timeout):
+        calls["url"] = url
+        calls["path"] = path
+        # write a real file so os.path.getsize works
+        with open(path, "wb") as f:
+            f.write(b"\xff\xd8fake\xff\xd9")
+        return path
+
+    monkeypatch.setattr(_acq, "capture_still_to_path", fake_capture)
+    rc = app.main(["--one-shot", "--stream", "top_camera",
+                   "--camera-host", "10.0.0.9", "--camera-port", "10000",
+                   "--out-path", dst])
+    assert rc == app.EXIT_OK
+    assert calls["path"] == dst
+    assert "cmd=Snap" in calls["url"]
+
+
+def test_main_stage1_missing_creds_config_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("CAMERA_USER", raising=False)
+    monkeypatch.delenv("CAMERA_PASSWORD", raising=False)
+    rc = app.main(["--one-shot", "--stream", "top_camera",
+                   "--camera-host", "10.0.0.9", "--out-path", str(tmp_path / "c.jpg")])
+    assert rc == app.EXIT_CONFIG_ERROR
+
+
+def test_main_stage1_capture_error_returns_capture_code(tmp_path, monkeypatch):
+    import acquire as _acq
+    monkeypatch.setenv("CAMERA_USER", "admin")
+    monkeypatch.setenv("CAMERA_PASSWORD", "pw")
+    monkeypatch.setattr(_acq, "capture_still_to_path",
+                        mock.Mock(side_effect=_acq.CaptureTimeout("timed out")))
+    rc = app.main(["--one-shot", "--stream", "top_camera",
+                   "--camera-host", "10.0.0.9", "--out-path", str(tmp_path / "c.jpg")])
+    assert rc == app.EXIT_CAPTURE_ERROR
 
 
 # ---------------------------------------------------------------------------

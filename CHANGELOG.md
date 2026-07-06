@@ -14,6 +14,24 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Stage 1 (single real capture -> save raw bytes; the acquisition spine).
+  Verified on H00F 2026-07-06.
+  - acquire.py: native-still HTTP fetch. build_reolink_snap_url (query-param auth,
+    no %-encode of password punctuation, rs cache-buster); fetch_raw_still with a
+    hard timeout, returns RAW bytes untouched (no decode/re-encode); JPEG validated
+    by SOI/EOI so non-JPEG auth-error blobs are rejected not saved; save_bytes_atomic
+    (temp -> fsync -> os.replace, cleans .tmp on failure). CaptureTimeout vs
+    CaptureError distinguished; passwords redacted in logs. OpenCV/RTSP fallback
+    stubbed (NotImplementedError).
+  - app.py: one-shot-from-camera wired. --camera-host/--camera-port/--camera-channel
+    (env fallbacks CAMERA_HOST/PORT/CHANNEL); credentials ENV-ONLY (CAMERA_USER/
+    CAMERA_PASSWORD), never a flag. --capture-timeout; --out-path (Stage-1 temporary
+    sink; replaced by v2 naming in Stage 2). New exit code EXIT_CAPTURE_ERROR=3.
+  - tests/test_acquire_stage1.py (26 tests) + Stage-1 dispatch tests; 74 total, all
+    mocked (no camera/network), all pass.
+  - On-node verification: valid JPEG 1,226,354 bytes 3840x2160, SOI/EOI intact, no
+    .tmp litter. Design 2.4 CONFIRMED (Reolink cmd=Snap = bare JPEG, no APP0/APP1/
+    COM). Timeout path clean (rc=3, no file).
 - docs/IMPLEMENTATION-PLAN.md: staged, verify-as-you-go build plan (Stages 0-7 +
   1.5 spike), each ending in a verifiable artifact; dependency spine and deferred
   items documented. Stage 0 and Stage 1.5 marked DONE.
