@@ -5,8 +5,17 @@ An enhanced fork of the Sage/Waggle **imagesampler** plugin
 
 ## Status
 
-**Baseline snapshot — not yet modified.** This repo currently contains an exact
-copy of the upstream plugin as the starting point for planned enhancements.
+**Stages 0-3 shipped and verified end-to-end on H00F (2026-07-06).** CLI contract
++ fail-fast validation (Stage 0), single real capture (Stage 1), capture-time v2
+naming + self-describing EXIF/JSON embed (Stage 2), and the one-shot upload path
+to Beehive with placeholder node identity (Stage 3, full Beehive round-trip
+confirmed). `--continuous` ring cache + heartbeat land in later stages. Full
+design: `docs/imagesampler.flint.analysis.txt`.
+
+> **Platform blockers:** Sage infra bugs encountered building/deploying this
+> plugin (arm64/Thor build, buildkit `/proc/acpi`, side-loading path, runtime
+> GPS/VSN for node identity) are tracked with issue-ready writeups in
+> `~/AI-projects/Infra-problems-to-fix.md`.
 
 ## Provenance of the baseline
 
