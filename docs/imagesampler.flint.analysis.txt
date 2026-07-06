@@ -896,20 +896,27 @@ PART 4 — OPEN / UNRESOLVED
 ═══════════════════════════════════════════════
 Genuinely open items requiring a decision or a check before/at build.
 
-4.1  CACHE HOME: under uploads mount (A) vs dedicated subtree (B)  [OPEN]
-  (A) Write the ring under the auto-mounted /run/waggle/uploads (host
-      /media/plugin-data/uploads/...). Pro: zero config, guaranteed present,
-      persistent, per-instance. Con: it is the UPLOAD staging tree the upload-agent
-      watches — risk of the agent uploading cache files we did NOT intend to
-      upload. MUST confirm the upload-agent only uploads pywaggle-staged files (a
-      specific sub-path), not everything under the mount. If it uploads
-      everything, (A) is WRONG for a local-only ring (2.8).
-  (B) A dedicated shared subtree (a uservolume-N, or a distinct well-known host
-      dir e.g. /media/plugin-data/cache/<cache-name>/<camera>/) mounted rw into the
-      sampler and ro into consumers. Pro: cleanly separated; no accidental upload.
-      Con: user volumes need a nodeSelector; a fixed host dir must be provisioned.
-  LEANING (B). Final choice pending: (i) upload-agent scoping check; (ii) whether
-  a dedicated shared mount can be provisioned without the nodeSelector penalty.
+4.1  CACHE HOME: under uploads mount (A) vs dedicated subtree (B)  [RESOLVED 2026-07-06 -> B]
+  DECISION: (B) a dedicated subtree OUTSIDE the upload mount. Empirically resolved
+  by reading the upload-agent source (waggle-sensor/wes-upload-agent, main.sh):
+    - The agent loops forever over `/uploads` (host /media/plugin-data/uploads),
+      running find_uploads_in_cwd(): `find . -mindepth 3 -maxdepth 4 -type d`
+      filtered to paths shaped like `[<job>/]<plugin>/<version>/<ts>-<sha1hex>/`
+      where <version> matches x.y.z | vx.y.z | latest | test and the leaf matches
+      `<digits>-<hexdigits>` (the pywaggle staging dir containing {data,meta}).
+    - For every match it rsyncs to beehive with `--remove-source-files`, i.e. it
+      UPLOADS AND THEN DELETES the staged files, and rmdirs emptied dirs.
+  So option (A) is doubly wrong for a LOCAL-ONLY ring (2.8): the agent would
+  (i) upload files we must never upload, and (ii) DELETE our ring files out from
+  under our own eviction logic. Even though our flat v2 filename
+  (`<ts>-v2-<vsn>-<camera>.jpg`, no data/meta pair, no x.y.z dir) would not match
+  the regex today, relying on out-guessing the agent's scan is fragile.
+  RESOLUTION: write the ring under a dedicated subtree, default
+  `<cache-dir>/<camera>/`, that is NOT inside the upload mount. Operator points
+  `--cache-dir` at it; for pluginctl testing use `-v <hostdir>:<cache-dir>`; for a
+  scheduled job, provision a hostPath/uservolume (deployment detail, see Stage-4
+  design note). This has zero accidental-upload/delete risk and does not depend on
+  the agent's scan pattern.
 
 4.2  CROSS-USER READ PERMISSIONS ON CACHE FILES  [OPEN]
   Confirm the uid the sampler writes with and whether a consumer pod running as a
