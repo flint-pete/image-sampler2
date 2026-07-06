@@ -14,6 +14,29 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Stage 4d: ON-NODE verification of the `--continuous` producer on H00F (Thor)
+  against the live hummingcam (Reolink RLC-811A, 10.107.0.221:10000), via
+  `sudo pluginctl run --selector zone=core --env-from <creds> -v <host>:/cache`
+  with a host-mounted cache so the ring was observable from the host over SSH.
+  Params: interval=10s, --cache-max-count 3. Results (real ~1.5MB frames):
+  - Ring bounded at exactly 3; steady-state `evicted=1 ring_count=3` per tick
+    (evict-before-write holds the cap). Observed both in host `ls` and plugin log.
+  - Fixed-grid scheduling: writes on a clean 10s cadence (2.2 scheduler).
+  - EXIF correct on real frames: schema_version, camera, acquisition_path=
+    native-raw, upload_timestamp_ns=None (local-only), lat/lon=None (GPS omitted,
+    not faked), unique_id=sha256. vsn=NODE placeholder (in-pod, expected).
+  - Crash-safety / startup adoption: killed the pod and restarted with the same
+    cache-root; first post-restart capture logged `evicted=1 ring_count=3`,
+    proving it adopted the 3 pre-existing files (no wipe, no double-count).
+  - Local-only: `/run/waggle/uploads` stayed EMPTY in-pod after 20+ captures;
+    cache tree is separate from the uploads mount (4.1 validated in practice).
+  - Credentials env-only (--env-from a mode-600 file, shredded after); password
+    redacted as `password=***` in the fetch log. No creds on argv.
+  - WES stack (scheduler, sciencerule-checker, upload-agent, rabbitmq) unharmed;
+    test ran as a side-loaded pod in `default`, never touched `ses`. Node cleaned
+    (pod removed, scratch dir + creds file + build checkout deleted).
+  - Dockerfile fix: COPY now includes capture.py + cache.py (Stage-4 modules) —
+    verified imports load in-container. Built/imported as image-sampler2:0.2.0-rc.
 - Stage 4c: `--continuous` producer loop wired end-to-end (design 2.2 + 2.6).
   - `app.run_capture_loop()`: monotonic-grid scheduler with skip-on-overrun; clock
     + sleep injectable for deterministic tests (fake clock).
