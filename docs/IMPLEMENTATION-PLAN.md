@@ -91,26 +91,16 @@ on-node only.
 
 ---
 
-## Stage 1.5 — EXIF-injection library spike  `[TODO]`  (throwaway, de-risks Stage 2)
+## Stage 1.5 — EXIF-injection library spike  `[DONE]`  (resolved design 4.4)
 
-**Why:** 2.3/2.11 require inserting EXIF/UserComment into an existing JPEG byte
-stream WITHOUT a pixel decode/re-encode (to preserve camera segments like Mobotix
-M1IMG). 4.4 leaves the library OPEN. Per the "spike before build" convention,
-validate the approach before Stage 2 commits to it.
-
-**Do:** a throwaway experiment (not merged as product code) that, on a real
-captured JPEG:
-- Builds an EXIF/APP1 block with our standard tags + a UserComment JSON blob.
-- Inserts it into the existing byte stream, leaving all original segments intact.
-- Round-trips losslessly (read our fields back; confirm camera segments untouched;
-  confirm pixels unchanged — the frame is not re-encoded).
-- Candidates to compare: `piexif` (build APP1) + a raw segment splice; a minimal
-  custom JPEG segment writer. Note behavior on a Mobotix frame (M1IMG COM + MXF)
-  if a sample is available; at minimum prove it on the Reolink bare JPEG.
-
-**Verify:** the chosen approach demonstrably preserves foreign segments and does
-not re-encode. **Deliverable:** a one-paragraph decision recorded into design 4.4
-(resolve the OPEN), naming the library + method. Then Stage 2 uses it.
+**Result:** piexif chosen and VERIFIED. A spike (`spikes/exif_spike.py`) on a JPEG
+carrying a foreign COM segment proved: piexif.insert preserves foreign camera
+segments (M1IMG survived), the compressed pixel scan is byte-identical (no
+re-encode), and our 13-field UserComment JSON + SHA256 ImageUniqueID round-trip.
+Decision + API quirks recorded in design 4.4 (BytesIO sink required for in-memory
+bytes; UserComment 8-byte charset prefix; GPS needs abs value + N/S/E/W ref — H00F
+lon -87.9827; compute SHA256 over the final injected bytes). piexif added to
+requirements at Stage 2.
 
 ---
 

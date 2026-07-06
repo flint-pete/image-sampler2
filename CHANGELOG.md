@@ -14,6 +14,14 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- docs/IMPLEMENTATION-PLAN.md: staged, verify-as-you-go build plan (Stages 0-7 +
+  1.5 spike), each ending in a verifiable artifact; dependency spine and deferred
+  items documented. Stage 0 and Stage 1.5 marked DONE.
+- Stage 1.5 EXIF-injection spike (spikes/exif_spike.py): resolves design 4.4.
+  Proves piexif.insert embeds our EXIF/UserComment WITHOUT re-encoding pixels and
+  WITHOUT stripping foreign camera segments (Mobotix M1IMG COM survived; SOS..EOI
+  pixel scan byte-identical). 13-field UserComment JSON + SHA256 round-trip; H00F
+  negative-lon GPS handled via abs+ref. 6/6 checks pass.
 - Stage 0 (CLI contract + fail-fast validation). Rewrote app.py's command-line
   interface to the new two-mode design (docs 2.2/2.6/2.8/2.12):
   - Required, mutually-exclusive mode group: --one-shot | --continuous SECONDS.
@@ -32,6 +40,10 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   - Added .gitignore (venv, __pycache__, pytest cache, sample.jpg).
 
 ### Changed
+- Design doc 4.4: moved OPEN -> RESOLVED (piexif). Recorded the decision and the
+  empirically-learned API quirks (BytesIO sink for in-memory bytes; UserComment
+  8-byte charset prefix; GPS abs value + N/S/E/W ref, no signed values; SHA256 over
+  final injected bytes). Mirror re-synced.
 - ecr-meta/ecr-science-description.md: rewritten to document the new two-mode CLI
   and every flag (what each does, which mode it belongs to) plus the fail-fast
   rules and usage examples (one-shot, multi-stream, continuous producer,

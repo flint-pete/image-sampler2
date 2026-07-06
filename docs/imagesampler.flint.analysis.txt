@@ -881,13 +881,32 @@ Genuinely open items requiring a decision or a check before/at build.
   current.jpg) as used by the plugin. (Reolink creds are query-params; do not
   hardcode; parameterize.)
 
-4.4  EXIF-INJECTION LIBRARY (inject without re-encode)  [OPEN]
-  2.3/2.11 require inserting EXIF/UserComment into an existing JPEG byte stream
-  WITHOUT a pixel decode/re-encode (to preserve camera segments like Mobotix
-  M1IMG). Choose/verify a library or approach that appends/edits APPn/COM segments
-  in place (candidates to evaluate: piexif for the EXIF APP1 build + a raw segment
-  splice; a minimal custom JPEG-segment writer). Must round-trip losslessly and
-  not disturb existing camera segments.
+4.4  EXIF-INJECTION LIBRARY (inject without re-encode)  [RESOLVED 2026-07-05]
+  Requirement (2.3/2.11): insert EXIF/UserComment into an existing JPEG byte
+  stream WITHOUT a pixel decode/re-encode, preserving camera segments (Mobotix
+  M1IMG COM etc.). DECISION: use piexif (pure-Python, MIT) — build the block with
+  piexif.dump() and insert with piexif.insert(). VERIFIED by a Stage-1.5 spike on
+  a JPEG carrying a foreign COM segment:
+    - piexif.insert splits the JPEG into segments and re-emits them, inserting our
+      APP1/Exif at position 1 and pushing existing foreign segments down — it does
+      NOT strip them. Foreign COM (M1IMG) survived intact.
+    - The compressed pixel scan (SOS..EOI) was BYTE-IDENTICAL before/after — proof
+      there is no pixel re-encode (piexif never touches Pillow/pixels).
+    - Our 13-field UserComment JSON round-trips; SHA256 ImageUniqueID round-trips.
+    - Result is a valid decodable JPEG.
+  API QUIRKS to honor in Stage 2 (learned in the spike):
+    - piexif.insert(exif_bytes, image, new_file): with in-memory BYTES for image
+      you MUST pass a 3rd sink (an io.BytesIO or a path); it only writes in place
+      when image is a filename. (Bare bytes with no sink raises ValueError.)
+    - UserComment needs the 8-byte charset prefix b"ASCII\x00\x00\x00" + payload;
+      strip those 8 bytes when reading back.
+    - GPS: piexif CANNOT take signed lat/lon — store ABS value as DMS rationals
+      plus a ref ("N"/"S", "E"/"W"). H00F lon -87.9827 -> (87,1)(58,1)... ref="W".
+      (Signed values raise struct.error in piexif.dump.)
+    - SHA256 is computed over the FINAL injected bytes (after insert) so it matches
+      the stored object; compute it last.
+  Fallback/opencv-reencoded path: same piexif.insert on the re-encoded bytes (no
+  foreign segments to preserve there). Add piexif to requirements.txt.
 
 4.5  RESIZE/QUALITY vs NEVER-RE-ENCODE reconciliation  [OPEN]
   Decide how --jpeg-quality/--resize (3.4) coexist with the raw-native mandate
