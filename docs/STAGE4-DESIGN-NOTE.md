@@ -47,8 +47,26 @@ These are settled; the note records them so implementation is unambiguous.
   `/uploads/[<job>/]<plugin>/<version>/<ts>-<sha1>/` dir to beehive **and deletes
   the source** (`rsync --remove-source-files`). So the ring must live in a
   dedicated subtree OUTSIDE the upload mount, or the agent would both upload our
-  local-only files and delete them out from under our eviction. `--cache-dir`
+  local-only files and delete them out from under our eviction. `--cache-root`
   points at that subtree; it is never `/run/waggle/uploads`.
+- **Cache location model (DECIDED 2026-07-06 with Pete):** the flag is
+  **`--cache-root`** (renamed from `--cache-dir`), a BASE dir. The per-instance
+  subtree is `<cache-root>/<cache-name>/<camera>/`. `--cache-name` overrides the
+  middle segment (default = job id). **Default root is auto-detected:**
+  `$IS2_CACHE_ROOT` → `/local-cache` (if it exists) → `/tmp`. Today that lands in
+  `/tmp` (pod-local, ephemeral) which fully supports the PRODUCER + all Stage-4
+  verification; the day CI ships a persistent, cross-consumer `/local-cache` mount
+  the plugin uses it with zero flag/code change. **All cache code is written
+  ASSUMING a real persistent `/local-cache`; `/tmp` is an interim stopgap.**
+- **Interval (DECIDED):** `--continuous SECONDS` is INTEGER seconds only (positive
+  int; fractional not supported — keeps scheduling simple).
+- **Interim /tmp caveat (important scope boundary):** `/tmp` is pod-local and NOT
+  visible to other consumer pods, and is wiped on pod restart. So under `/tmp` the
+  PRODUCER is fully functional but the cross-pod CONSUMER story does NOT work yet —
+  that waits for CI's `/local-cache` + the 4.2 cross-user-read design. Stage 4 is
+  therefore PRODUCER-ONLY verification. (Startup-adoption/crash-safety logic is
+  still built and correct — it just only demonstrably matters within one pod
+  lifetime until `/local-cache` gives persistence across restarts.)
 
 ---
 
@@ -60,8 +78,16 @@ no pywaggle → fully unit-testable with tmp dirs. Proposed API:
 ```
 class CacheError(Exception): ...            # config-time (fail-fast) issues only
 
-def stream_dir(cache_dir, camera) -> str
-    # <cache-dir>/<camera>; create with parents if missing (mkdir -p semantics).
+def resolve_cache_root(explicit=None) -> str
+    # precedence: explicit --cache-root > $IS2_CACHE_ROOT > /local-cache (if isdir)
+    # > /tmp. Returns the base dir. Does NOT create it (caller mkdir -p + writable
+    # check for fail-fast). Pure-ish (only os.path.isdir probe) -> unit-testable
+    # via monkeypatching the /local-cache probe.
+
+def stream_dir(cache_root, cache_name, camera) -> str
+    # <cache-root>/<cache-name>/<camera>; mkdir -p; fail-fast (CacheError) if not
+    # writable. cache_name defaults (in the caller) to the job id; --cache-name
+    # overrides. Validates cache_name is filesystem-safe (no path separators).
 
 def scan_ring(stream_dir) -> RingState
     # RingState = {count, total_bytes, members:[(capture_ts_ns, path, size)] oldest-first,
@@ -95,7 +121,9 @@ def capture_and_embed_to_tmp(*, url, capture_timeout, ident, job, task,
 1. Resolve identity once (nodemeta, Stage 3 placeholder-aware).           # cheap, reused per tick
 2. Build the Reolink URL once (creds from env, Stage 3).
 3. stream = args.stream[0]; camera = args.name[0] if args.name else stream
-4. sdir = cache.stream_dir(args.cache_dir, camera)   # fail-fast if cache_dir missing/unwritable (validate_args already checks)
+4. root = cache.resolve_cache_root(args.cache_root)                        # /local-cache-else-/tmp default
+   cname = args.cache_name or job_id                                       # --cache-name overrides
+   sdir = cache.stream_dir(root, cname, camera)                            # mkdir -p; fail-fast if unwritable
 5. Run the 2.2 monotonic-grid loop:
      each tick:
        try: tmp,final,size,ts = capture.capture_and_embed_to_tmp(...)
@@ -116,36 +144,56 @@ green.)
 
 ---
 
-## 4. Flags (already defined in Stage 0 — Stage 4 gives them behaviour)
+## 4. Flags (Stage 0 defined most; Stage 4 gives them behaviour + one RENAME)
 
-No new flags. `validate_args` already enforces the fail-fast rules (2.6):
-- `--continuous SECONDS` mutually exclusive with `--one-shot` (argparse group).
-- `--cache-dir` REQUIRED with `--continuous`; must be existing + writable → else
-  fail-fast (exit 2). Confirm validate_args already checks writability; if it only
-  checks existence, add the writable check.
+**RENAME (breaking, approved 2026-07-06): `--cache-dir` → `--cache-root`.** Meaning
+changes from "full cache dir" to a BASE root; the per-instance subtree
+`<cache-root>/<cache-name>/<camera>/` is derived. This is a Stage-4 CLI edit (the
+LOCKED CLI in analysis.txt is updated to match). No external users yet (pre-1.0),
+so the break is acceptable and net-clearer.
+
+Flag rules (`validate_args`, fail-fast, exit 2):
+- `--continuous SECONDS` mutually exclusive with `--one-shot` (argparse group);
+  SECONDS is a positive INTEGER (fractional rejected) → fail-fast on <= 0.
+- `--cache-root` OPTIONAL with `--continuous`; if omitted, auto-detect
+  (`$IS2_CACHE_ROOT` → `/local-cache` if isdir → `/tmp`). If given, must resolve to
+  a writable dir (mkdir -p, then writability check) → else fail-fast.
+- `--cache-name` OPTIONAL; default = job id (from `WAGGLE_APP_ID`/env; safe
+  fallback if unset). Must be filesystem-safe (letters/digits/dot/dash/underscore,
+  no path separators) → else fail-fast.
 - At least one of `--cache-max-count` / `--cache-max-mb` REQUIRED with
   `--continuous` (else unbounded) → fail-fast.
-- `--cache-dir` / `--cache-max-*` with `--one-shot` → fail-fast (meaningless).
-- **Open TODO to verify in code:** confirm the above are all present in the current
-  `validate_args`; the flags exist but Stage 0 may not have wired every rule.
+- `--cache-root` / `--cache-name` / `--cache-max-*` with `--one-shot` → fail-fast
+  (meaningless).
+- `--cache-max-mb` is decimal MB (10^6 bytes) per 2.6 — explicit in code.
 
-`--cache-max-mb` is decimal MB (10^6 bytes) per 2.6 — be explicit in code.
+**Verify in code during 4a/4c:** the current Stage-0 `validate_args` was written
+against the OLD `--cache-dir` (REQUIRED, must pre-exist) and `--cache-name`
+(REQUIRED, orthogonal). Stage 4 must: rename the flag, make root OPTIONAL with
+auto-detect, make name OPTIONAL with job-id default, and drop the "must already
+exist" rule in favor of mkdir -p. Update the Stage-0 CLI tests accordingly.
 
 ---
 
 ## 5. Deployment / mount (Option B concretely)
 
-- **Local dev / pluginctl testing:** `pluginctl run -v <hostdir>:<cachedir> ...
-  -- --continuous <sec> --cache-dir <cachedir> --cache-max-count N`. The hostdir
-  is any dir NOT under `/media/plugin-data/uploads`.
-- **Scheduled SES job:** needs a provisioned rw mount for the cache subtree
-  (hostPath or a user volume). This is a deployment detail; Stage 4 code just takes
-  `--cache-dir`. The job-YAML mount wiring can be finalized alongside the consumer
-  (it's the consumer that needs to read the same subtree ro).
+- **Now (interim, /tmp default):** no mount needed. With no `--cache-root`, the
+  ring lands in `/tmp/<cache-name or job>/<camera>/` inside the pod. Works for the
+  producer and all Stage-4 verification. `pluginctl run ... -- --continuous <sec>
+  --cache-max-count N` (optionally `--cache-root <hostdir>` + `-v <hostdir>:<hostdir>`
+  to inspect files from the host during testing).
+- **Future (CI `/local-cache`):** when the Sage CI team provides a node-persistent,
+  cross-consumer-readable `/local-cache` mount, the auto-detect default picks it up
+  with ZERO flag/code change. The scheduled job just needs that mount; the consumer
+  reads the same `<cache-name>/<camera>/` subtree ro.
+- **Never** point `--cache-root` at `/run/waggle/uploads` (4.1: the upload-agent
+  would upload + delete our files).
 - **4.2 (cross-user read perms) stays OPEN** and is on the post-initial-code list:
-  once the ring writes, confirm the uid it writes as and whether a different-user
-  consumer pod can read the files (likely world-readable files + traversable dirs;
-  add `chmod` on write if needed). Does NOT block Stage 4 producer work.
+  it genuinely cannot be solved until a real shared mount exists (under `/tmp` there
+  is no cross-pod visibility to permission). Once `/local-cache` lands, confirm the
+  uid the ring writes as and whether a different-user consumer pod can read it
+  (likely world-readable files + traversable dirs; add `chmod` on write if needed).
+  Does NOT block Stage 4 producer work.
 
 ---
 
@@ -192,20 +240,29 @@ Per Pete's staged workflow — each is a reviewable commit with tests + CHANGELO
 
 ---
 
-## 8. Open questions for Pete before/while building
+## 8. Open questions for Pete
 
-1. **Scheduler `tick` naming vs `--continuous` value:** confirm `--continuous`
-   takes the interval in **seconds** (Stage 0 flag help says SECONDS). OK to keep
-   integer seconds, or allow fractional? (Design says `interval_s`; I'll accept
-   float, validate > 0.)
-2. **Multi-stream in one process?** 2.6 says "each `--stream` (own process) writes
-   its own subdir" and caps are per-stream. Current CLI takes `--stream` as a list.
-   For Stage 4, do we (a) support only ONE stream per `--continuous` process (fail-
-   fast if >1, matching "own process" and your one-plugin-per-model preference), or
-   (b) loop over multiple streams in one process? I lean (a) — simpler, matches the
-   locked per-process model; multi-stream = run multiple jobs. Confirm.
-3. **`--cache-name`** (2.7/2.8 mention a cache-name): is it just an alias/label for
-   the subdir, or does it change the on-disk layout? Current flags include
-   `--cache-name`; I'll treat it as the subdir name override (default = camera).
-   Confirm intended semantics.
-4. Anything you want logged per tick beyond `wrote/size/evicted/ring_count/ring_mb`?
+RESOLVED 2026-07-06:
+- **#2 cache location / naming** → `--cache-dir` renamed to `--cache-root` (base
+  dir), subtree `<cache-root>/<cache-name>/<camera>/`, `--cache-name` overrides the
+  middle segment (default = job id). Default root auto-detected
+  `$IS2_CACHE_ROOT` → `/local-cache` (if present) → `/tmp`. Interim `/tmp`, all code
+  assumes a future persistent `/local-cache`. (See §2, §4, §5.)
+- **#3 interval** → INTEGER seconds only (no fractional). (See §4.)
+
+STILL OPEN (Pete to decide before 4c):
+1. **Single- vs multi-stream per `--continuous` process.** 2.6 says "each `--stream`
+   (own process) writes its own subdir" with per-stream caps. Current CLI takes
+   `--stream` as a repeatable list. Options:
+     (a) ONE stream per `--continuous` process — fail-fast if >1 `--stream` given.
+         Matches the locked per-process model + Pete's one-plugin-per-model
+         preference; multi-stream = run multiple jobs. (My lean — simpler, no
+         intra-process concurrency.)
+     (b) Loop over multiple streams in one process (round-robin within the tick, or
+         a worker thread/subprocess per stream). More moving parts (scheduling,
+         fail-soft isolation, per-stream rings in one proc).
+   Awaiting Pete's call.
+
+MINOR (implementer's discretion unless Pete objects):
+- Per-tick log line: `wrote <final> size=<b> evicted=<n> ring_count=<c> ring_mb=<m>`
+  (plus a WARN line on skip/drop/evict-failure). OK?

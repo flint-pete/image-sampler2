@@ -29,6 +29,13 @@ STATUS LEGEND (used throughout)
   [OPEN]        genuinely unresolved; needs a decision or a check before build
   [DEFERRED]    intentionally postponed to a post-robust-testing backlog (Part 5)
 
+CLI RENAME NOTE (2026-07-06): the continuous-cache flag was renamed
+--cache-dir -> --cache-root, and its meaning changed from "full cache dir" to a
+BASE root under which the per-instance subtree <cache-root>/<cache-name>/<camera>/
+is created (see 2.6 for the authoritative definition + auto-detected default
+/local-cache-else-/tmp). Any older "--cache-dir" text remaining in this document
+refers to --cache-root and the 2.6 layout; 2.6 is authoritative.
+
 Node/context facts used below
   Target node: H00F (Thor, single GPU, hummingcam). Geo lat 41.7180, lon -87.9827.
   Node hw id 00004cbb4701d16c / host ...agx-thor.
@@ -346,7 +353,7 @@ MODE-AND-FLOW OVERVIEW (the whole decision tree in one place)  [LOCKED]
         is the composable "periodic uploader" half of the producer/consumer
         pattern (2.8).
 
-  (3) --continuous <SECONDS> --cache-dir <dir> --cache-name <name> [caps]
+  (3) --continuous <SECONDS> [--cache-root <root>] [--cache-name <name>] [caps]
         FLOW: on a fixed-period grid (2.2), acquire a frame -> embed EXIF -> build
         the FULL name <capture_ts_ns>-v2-<vsn>-<camera>.jpg ITSELF and atomically
         write that exact filename into the per-stream ring under <dir> (2.6, 2.10)
@@ -487,13 +494,39 @@ exclusivity is replaced by the mode split (2.2) + --from-cache (2.8).
 ───────────────────────────────
 2.6  CONTINUOUS-MODE LOCAL CACHE (RING BUFFER)  [LOCKED]
 ───────────────────────────────
---continuous writes to a local --cache-dir (renamed from upstream --out-dir),
-bounded as a ring buffer so storage never grows without bound.
-FLAG: --cache-dir
-  - REQUIRED with --continuous (fail-fast if missing).
-  - Meaningless with --one-shot; --cache-dir or the cache-max-* flags with
-    --one-shot -> fail-fast error.
-  - Must be an existing, writable directory at startup -> else fail-fast.
+--continuous writes each frame into a local ring buffer, bounded so storage never
+grows without bound. The cache location is a ROOT + a per-instance subtree.
+
+FLAG: --cache-root  (renamed from --cache-dir 2026-07-06; supersedes --out-dir)
+  - The BASE directory under which this instance's cache subtree lives.
+  - DEFAULT (auto-detected, first that applies):
+        $IS2_CACHE_ROOT env  ->  /local-cache (if it exists)  ->  /tmp
+    Rationale: today no shared cache mount exists, so the default lands in /tmp
+    (pod-local, ephemeral, works for the PRODUCER + all Stage-4 verification). The
+    Sage CI team is expected to provide a node-persistent, cross-consumer-readable
+    /local-cache mount (a sibling to /uploads); when present the plugin uses it
+    with NO flag or code change. An explicit --cache-root always wins.
+  - Created with parents if missing (mkdir -p); must be writable -> else fail-fast.
+  - INTERIM /tmp CAVEAT: /tmp is pod-local and wiped on pod restart, and is NOT
+    visible to other consumer pods. So under /tmp the PRODUCER is fully functional
+    but the cross-pod CONSUMER story does not work yet -- that waits for CI's
+    /local-cache + the 4.2 cross-user-read design. All cache machinery is written
+    ASSUMING a real persistent /local-cache; /tmp is only a stopgap for producing
+    and verifying images now.
+CACHE SUBTREE LAYOUT (under the root):
+        <cache-root>/<cache-name>/<camera>/<capture_ts_ns>-v2-<vsn>-<camera>.jpg
+  - <cache-name> defaults to the JOB id (from WAGGLE_APP_ID / job env; falls back
+    to a safe default if unset). This mirrors the future /local-cache/<job>/...
+    convention so consumers have a predictable place to look.
+  - --cache-name OVERRIDES the <cache-name> segment (stable, filesystem-safe id;
+    letters/digits/dot/dash/underscore, no path separators). Use it so two configs
+    on the same camera don't collide and so a consumer can be pointed at a known
+    name. OPTIONAL (defaults to job id).
+  - <camera> is the per-stream segment (2.6 per-stream ring); each stream's ring is
+    independent, caps applied per stream.
+FLAG: --continuous SECONDS
+  - Interval is INTEGER SECONDS ONLY (positive int; fractional not supported --
+    keeps scheduling simple). Fail-fast on <= 0.
 BOUNDING (two independent caps, evict-on-EITHER):
   --cache-max-count N   max number of images in the ring
   --cache-max-mb    M   max total megabytes (decimal MB, 10^6) of ring images
@@ -501,9 +534,11 @@ BOUNDING (two independent caps, evict-on-EITHER):
   - At least ONE required with --continuous (else unbounded) -> fail-fast if none.
   - "size" = total bytes of the MANAGED image set (files matching the v2 name
     pattern) in the per-stream ring; .tmp and unknown files are not counted.
+ONE-SHOT REJECTS CACHE FLAGS: --cache-root / --cache-name / --cache-max-* with
+  --one-shot -> fail-fast (meaningless; one-shot is upload-only, 2.8).
 PER-STREAM RINGS: each --stream (own process) writes its own subdir
-<cache-dir>/<camera>/ — an INDEPENDENT ring, caps applied PER STREAM. No shared
-state, no locks, race-free.
+<cache-root>/<cache-name>/<camera>/ — an INDEPENDENT ring, caps applied PER
+STREAM. No shared state, no locks, race-free.
 "OLDEST" ORDERING: evict oldest by the CAPTURE-TS PREFIX in the v2 filename
 (authoritative, no stat); fallback mtime for non-matching files; unknown files
 left untouched and uncounted.
