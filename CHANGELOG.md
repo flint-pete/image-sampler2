@@ -14,6 +14,26 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 ## [Unreleased]
 
 ### Added
+- Stage 4a: pure ring-cache module `cache.py` (no camera/network/pywaggle; FS-only,
+  fully unit-tested). Implements design 2.6:
+  - `resolve_cache_root()` auto-detect precedence `$IS2_CACHE_ROOT` -> `/local-cache`
+    (if present) -> `/tmp`. `/tmp` is an interim stopgap; all logic assumes a future
+    node-persistent `/local-cache` from the Sage CI team.
+  - `stream_dir()` -> `<cache-root>/<cache-name>/<camera>/` with cache-name
+    validation + mkdir -p + writability check (fail-fast CacheError).
+  - `scan_ring()` stateless per-stream scan: v2-named files are ring members
+    (ordered oldest-first by capture-ts prefix, no stat); non-v2 files and `.tmp`
+    are unknown (uncounted, untouched).
+  - `plan_evictions()` PURE planner: two independent caps (count, MB decimal 10^6),
+    evict-on-EITHER, oldest-first; E3 guard drops a single new image larger than the
+    size budget.
+  - `commit_capture()` EVICT-BEFORE-write then atomic `os.replace`; fail-soft on
+    eviction-delete errors; cleans up tmp on drop/failed-publish (no `.tmp` litter).
+  - `metadata.parse_v2_name()` inverse of `build_v2_name` (recovers capture-ts for
+    ring ordering; robust to hyphens in vsn/camera; rejects non-v2 names).
+  - Tests: +51 (tests/test_cache_stage4.py) covering root auto-detect, name
+    validation, scan ordering + unknown handling, every cap combination, E3,
+    evict-before-write ordering, atomic publish, fail-soft eviction. 162 total pass.
 - Node identity placeholder + FULL Beehive round-trip verification (2026-07-06).
   - Verified there is NO runtime way for a plugin to learn its own VSN/GPS
     (pywaggle 0.56 source + docs + live ses pod + yolo/bioclip precedent). /etc/waggle

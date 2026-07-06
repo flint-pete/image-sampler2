@@ -243,6 +243,15 @@ Per Pete's staged workflow — each is a reviewable commit with tests + CHANGELO
 ## 8. Open questions for Pete
 
 RESOLVED 2026-07-06:
+- **#1 one stream per `--continuous` process (a1).** One plugin instance = one
+  camera stream. Top+bottom cameras = two separate plugin processes / SES jobs,
+  each with its own cache subtree, sample rate, and caps. ENFORCEMENT: `--stream`
+  stays a repeatable list (CLI shape unchanged, preserves old semantics), but
+  `--continuous` with >1 `--stream` is a fail-fast config error ("--continuous
+  supports exactly one --stream; run a separate plugin per camera"). One-shot is
+  LEFT UNCHANGED (it already uses stream[0]); the single-stream rule is confined to
+  the new continuous mode so shipped Stage-3 behavior is undisturbed. This removes
+  all intra-process concurrency: one scheduler, one ring, one fail-soft path.
 - **#2 cache location / naming** → `--cache-dir` renamed to `--cache-root` (base
   dir), subtree `<cache-root>/<cache-name>/<camera>/`, `--cache-name` overrides the
   middle segment (default = job id). Default root auto-detected

@@ -77,6 +77,48 @@ def object_name_for(capture_ts_ns, vsn, camera):
     return build_v2_name(capture_ts_ns, vsn, camera)
 
 
+def parse_v2_name(filename):
+    """Parse a v2 filename -> (capture_ts_ns:int, vsn:str, camera:str) or None.
+
+    Inverse of build_v2_name for the ring cache (2.6): recovers the capture-ts
+    prefix so eviction can order oldest-first WITHOUT a stat. Returns None for any
+    name that does not match the exact <ts>-v2-<vsn>-<camera>.jpg shape (callers
+    treat non-matching files as unknown -- left untouched and uncounted, 2.6).
+    Only the basename is considered; any directory part is ignored.
+    """
+    import os
+    base = os.path.basename(filename)
+    if not base.endswith(".jpg"):
+        return None
+    stem = base[:-len(".jpg")]
+    # Anchor on the "-v2-" marker rather than positional splitting: the timestamp
+    # is all-digits (no '-'), so the FIRST "-v2-" after the leading digits delimits
+    # <ts> from <vsn>-<camera>. This is robust to hyphens in vsn or camera (which
+    # build_v2_name permits -- it only forbids path separators/whitespace). We then
+    # need vsn+camera; since either may contain '-', we cannot uniquely split them
+    # from the name alone -- but the ring only needs the capture-ts for ordering,
+    # so we return the ts authoritatively and the remainder as a best-effort
+    # (vsn, camera) via a right-split that is correct for hyphenless vsn (the
+    # common case). Ordering/eviction never depends on vsn/camera.
+    marker = "-" + V2_MARKER + "-"
+    idx = stem.find(marker)
+    if idx <= 0:
+        return None
+    ts_str = stem[:idx]
+    rest = stem[idx + len(marker):]
+    if not ts_str.isdigit() or not rest:
+        return None
+    ts = int(ts_str)
+    if ts <= 0:
+        return None
+    # best-effort vsn/camera split (first '-'); correct when vsn has no '-'.
+    if "-" in rest:
+        vsn, camera = rest.split("-", 1)
+    else:
+        vsn, camera = rest, ""
+    return (ts, vsn, camera)
+
+
 def _ns_to_exif_datetime(ts_ns):
     """(YYYY:MM:DD HH:MM:SS, subsec_str) in UTC from ns epoch (node clock)."""
     dt = datetime.datetime.fromtimestamp(ts_ns / 1e9, tz=datetime.timezone.utc)

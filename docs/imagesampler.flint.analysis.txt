@@ -538,7 +538,11 @@ ONE-SHOT REJECTS CACHE FLAGS: --cache-root / --cache-name / --cache-max-* with
   --one-shot -> fail-fast (meaningless; one-shot is upload-only, 2.8).
 PER-STREAM RINGS: each --stream (own process) writes its own subdir
 <cache-root>/<cache-name>/<camera>/ — an INDEPENDENT ring, caps applied PER
-STREAM. No shared state, no locks, race-free.
+STREAM. No shared state, no locks, race-free. ENFORCED (a1, 2026-07-06): ONE
+plugin instance = ONE camera stream; --continuous with >1 --stream is a fail-fast
+config error (run a separate plugin/job per camera). This removes intra-process
+concurrency entirely: one scheduler, one ring, one fail-soft path. (--one-shot is
+unchanged; it uses stream[0].)
 "OLDEST" ORDERING: evict oldest by the CAPTURE-TS PREFIX in the v2 filename
 (authoritative, no stat); fallback mtime for non-matching files; unknown files
 left untouched and uncounted.
