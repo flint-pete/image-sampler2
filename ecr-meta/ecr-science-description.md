@@ -9,10 +9,12 @@ uploaders) consume on their own schedule.
 Collecting still images is one of the fundamental ways to gather training data and
 to show the visual context in which an inference was made.
 
-> Status: under staged implementation. **Stage 0** ships the command-line contract
-> and its fail-fast validation only (it validates flags and exits without capturing).
-> Acquisition, capture-time naming + EXIF, upload, the ring cache, and the heartbeat
-> land in later stages. Full design: `docs/imagesampler.flint.analysis.txt`.
+> Status: under staged implementation. **Stages 0-3 shipped**: the CLI contract +
+> fail-fast validation (Stage 0), single real capture (Stage 1), capture-time v2
+> naming + self-describing EXIF/JSON embed (Stage 2), and the one-shot upload path
+> to Beehive with fleet-portable node identity (Stage 3). The `--continuous` ring
+> cache and the heartbeat land in later stages. Full design:
+> `docs/imagesampler.flint.analysis.txt`.
 
 ---
 
