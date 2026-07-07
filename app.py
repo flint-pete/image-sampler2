@@ -153,6 +153,18 @@ def build_parser():
              'liveness signal in continuous mode (local-only never uploads); it '
              'publishes env.imagesampler.cache.* stats and fires even when '
              'captures fail. Must be a positive integer.')
+    parser.add_argument(
+        '--max-count', dest='max_count', metavar='N',
+        action='store', default=0, type=int,
+        help='CONTINUOUS ONLY. Clean self-exit after N captures (default 0 = '
+             'unbounded). For windowed/duty-cycled scheduling. Exit is a success '
+             '(0). Counts captures only, not heartbeats.')
+    parser.add_argument(
+        '--max-runtime', dest='max_runtime', metavar='SECONDS',
+        action='store', default=0, type=int,
+        help='CONTINUOUS ONLY. Clean self-exit after S wall-clock seconds (default '
+             '0 = unbounded), checked on a capture edge so >=1 frame is always '
+             'delivered. Pairs with cron scheduling; exit is a success (0).')
 
     # --- camera connection (native-still fetch, design 2.3/4.3) ----------------
     # Address may come from flags or env (CAMERA_HOST/PORT/CHANNEL). Credentials
@@ -291,6 +303,14 @@ def validate_args(args):
             raise ConfigError(
                 "cache flags are only valid with --continuous; "
                 f"remove {', '.join(offending)} in --one-shot mode")
+        # self-exit bounds are continuous-only (one-shot is already one bounded run)
+        bound_offending = [f for f, set_ in (("--max-count", args.max_count),
+                                             ("--max-runtime", args.max_runtime))
+                           if set_]
+        if bound_offending:
+            raise ConfigError(
+                "self-exit bounds are only valid with --continuous; "
+                f"remove {', '.join(bound_offending)} in --one-shot mode")
         # --from-cache: newest-from-cache is a valid one-shot source
         if args.from_cache is not None:
             if not args.from_cache:
@@ -336,6 +356,15 @@ def validate_args(args):
     if args.heartbeat_secs is None:
         args.heartbeat_secs = 60
 
+    # --max-count / --max-runtime self-exit bounds (§3.3): non-negative ints,
+    # 0 = unbounded. Negative is a config error.
+    if args.max_count < 0:
+        raise ConfigError(
+            f"--max-count must be >= 0 (0 = unbounded) (got {args.max_count})")
+    if args.max_runtime < 0:
+        raise ConfigError(
+            f"--max-runtime must be >= 0 (0 = unbounded) (got {args.max_runtime})")
+
 
 def summarize(args):
     """Human-readable one-line summary of the validated configuration."""
@@ -348,10 +377,16 @@ def summarize(args):
         caps.append(f"max_count={args.cache_max_count}")
     if args.cache_max_mb is not None:
         caps.append(f"max_mb={args.cache_max_mb}")
+    bounds = []
+    if getattr(args, "max_count", 0):
+        bounds.append(f"max_count={args.max_count}")
+    if getattr(args, "max_runtime", 0):
+        bounds.append(f"max_runtime={args.max_runtime}s")
+    bounds_str = f" bounds=[{', '.join(bounds)}]" if bounds else " bounds=none"
     return (f"mode=continuous interval={args.continuous}s streams={args.stream} "
             f"names={args.name or '(auto)'} cache_root={args.cache_root or '(auto)'} "
             f"cache_name={args.cache_name or '(job)'} caps=[{', '.join(caps)}] "
-            f"heartbeat={args.heartbeat_secs or 60}s")
+            f"heartbeat={args.heartbeat_secs or 60}s{bounds_str}")
 
 
 def _one_shot_from_camera(args):
@@ -476,7 +511,8 @@ def run_capture_loop(*, interval_s, do_capture, max_ticks=None,
 
 
 def run_dual_grid_loop(*, capture_interval_s, do_capture, heartbeat, do_heartbeat,
-                       max_iters=None, max_captures=None, monotonic=None, sleep=None):
+                       max_iters=None, max_captures=None, max_runtime_ns=None,
+                       monotonic=None, sleep=None):
     """Two monotonic grids on ONE thread (design §3.1, resolution 1B).
 
     - CAPTURE grid: fixed period capture_interval_s, skip-on-overrun (as 2.2).
@@ -492,10 +528,13 @@ def run_dual_grid_loop(*, capture_interval_s, do_capture, heartbeat, do_heartbea
     do_heartbeat(now_ns): publishes one heartbeat (caller reads
         heartbeat.snapshot_and_reset inside). Only called when heartbeat.due().
 
-    Clock/sleep injected (looked up at call time so monkeypatch works). Two bounds
-    for tests (None = unbounded): max_iters caps WAKE iterations; max_captures caps
-    the number of do_capture() calls (the natural producer bound). Returns the
-    number of iterations executed.
+    Clock/sleep injected (looked up at call time so monkeypatch works). Bounds
+    (None = unbounded): max_iters caps WAKE iterations (test harness); max_captures
+    caps do_capture() calls (--max-count / test bound); max_runtime_ns caps
+    wall-clock ns from loop start (--max-runtime), checked at the TAIL after a
+    completed capture so exit lands on a window edge (§3.3). Whichever trips first
+    ends the loop; it returns normally so callers' cleanup (finally) runs. Returns
+    the number of iterations executed.
     """
     if monotonic is None:
         monotonic = time.monotonic_ns
@@ -530,6 +569,12 @@ def run_dual_grid_loop(*, capture_interval_s, do_capture, heartbeat, do_heartbea
         if max_iters is not None and iters >= max_iters:
             return iters
         if max_captures is not None and captures >= max_captures:
+            return iters
+        # Wall-clock bound (§3.3): checked at the loop TAIL so exit lands after a
+        # completed capture edge, never mid-interval. Requires >=1 capture so a
+        # sub-interval runtime still delivers at least one frame.
+        if (max_runtime_ns is not None and captures >= 1
+                and (now - start) >= max_runtime_ns):
             return iters
 
 
@@ -648,10 +693,19 @@ def _continuous_to_cache(args, *, max_ticks=None, plugin=None,
                 logger.warning("STAGE 5: heartbeat publish failed for %s: %s",
                                topic, e)
 
+    # Self-exit bounds (§3.3). Test harness passes max_ticks (caps captures);
+    # production passes --max-count / --max-runtime. Tests never set --max-count and
+    # production never sets max_ticks, so take whichever capture bound is set.
+    eff_max_captures = max_ticks if max_ticks is not None else (
+        args.max_count if getattr(args, "max_count", 0) else None)
+    eff_max_runtime_ns = (args.max_runtime * 1_000_000_000
+                          if getattr(args, "max_runtime", 0) else None)
     try:
         run_dual_grid_loop(capture_interval_s=args.continuous, do_capture=one_tick,
                            heartbeat=hb, do_heartbeat=do_heartbeat,
-                           max_captures=max_ticks, monotonic=monotonic, sleep=sleep)
+                           max_captures=eff_max_captures,
+                           max_runtime_ns=eff_max_runtime_ns,
+                           monotonic=monotonic, sleep=sleep)
     finally:
         if own_plugin and hasattr(plugin, "__exit__"):
             try:

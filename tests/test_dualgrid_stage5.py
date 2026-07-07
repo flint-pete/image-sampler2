@@ -122,3 +122,67 @@ def test_max_iters_bounds_loop():
         do_heartbeat=lambda now: hb.snapshot_and_reset(0, 0, now),
         max_iters=4, monotonic=clk.monotonic_ns, sleep=clk.sleep)
     assert n == 4
+
+
+# --- Stage 3.3: max_captures / max_runtime_ns production bounds ---------------
+
+def test_max_captures_bounds_captures_not_heartbeats():
+    # capture 10s, heartbeat 3s (many beats per capture): max_captures=2 must stop
+    # after exactly 2 CAPTURES regardless of how many heartbeats fired.
+    clk, hb = make(3)
+    caps, beats = [], []
+    app.run_dual_grid_loop(
+        capture_interval_s=10,
+        do_capture=lambda: caps.append(clk.t),
+        heartbeat=hb,
+        do_heartbeat=lambda now: (beats.append(now), hb.snapshot_and_reset(0, 0, now)),
+        max_captures=2, monotonic=clk.monotonic_ns, sleep=clk.sleep)
+    assert len(caps) == 2                     # exactly 2 captures
+    assert caps == [0, 10 * S]
+    assert len(beats) >= 2                     # heartbeats fired independently
+
+
+def test_max_runtime_exits_after_capture_edge():
+    # capture every 10s, runtime 25s -> captures at 0,10,20; at tail after the 20s
+    # capture, elapsed(20s) < 25s so continue; next capture at 30s, elapsed 30>=25
+    # -> exit. Exit lands ON a capture edge, never mid-interval.
+    clk, hb = make(60)                         # heartbeat won't interfere
+    caps = []
+    app.run_dual_grid_loop(
+        capture_interval_s=10,
+        do_capture=lambda: caps.append(clk.t),
+        heartbeat=hb,
+        do_heartbeat=lambda now: hb.snapshot_and_reset(0, 0, now),
+        max_runtime_ns=25 * S, monotonic=clk.monotonic_ns, sleep=clk.sleep)
+    # all captures are on the 10s grid (edge-aligned), none mid-interval
+    assert all(c % (10 * S) == 0 for c in caps)
+    # exits at the first capture edge at/after 25s == 30s
+    assert caps[-1] == 30 * S
+    assert caps == [0, 10 * S, 20 * S, 30 * S]
+
+
+def test_max_runtime_guarantees_at_least_one_capture():
+    # runtime shorter than the interval: still deliver >=1 frame (captures>=1 gate)
+    clk, hb = make(60)
+    caps = []
+    app.run_dual_grid_loop(
+        capture_interval_s=100,
+        do_capture=lambda: caps.append(clk.t),
+        heartbeat=hb,
+        do_heartbeat=lambda now: hb.snapshot_and_reset(0, 0, now),
+        max_runtime_ns=5 * S, monotonic=clk.monotonic_ns, sleep=clk.sleep)
+    assert caps == [0]                         # the startup capture, then exit
+
+
+def test_max_count_and_runtime_first_to_trip_wins():
+    # max_count=2 trips before runtime=1000s
+    clk, hb = make(60)
+    caps = []
+    app.run_dual_grid_loop(
+        capture_interval_s=10,
+        do_capture=lambda: caps.append(clk.t),
+        heartbeat=hb,
+        do_heartbeat=lambda now: hb.snapshot_and_reset(0, 0, now),
+        max_captures=2, max_runtime_ns=1000 * S,
+        monotonic=clk.monotonic_ns, sleep=clk.sleep)
+    assert len(caps) == 2

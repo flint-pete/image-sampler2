@@ -115,7 +115,10 @@ then exits 0 on its own (pod completes, not killed); confirm clean pod completio
   _continuous_to_cache; summarize(); + tests.
 - s3.3c: on-node self-exit verification on H00F; CHANGELOG; (0.5.0 when you say).
 
-## 6. Open questions for Pete
+## 6. Open questions for Pete — RESOLVED 2026-07-06
 
-1. `--max-count` counts CAPTURES only (not heartbeats/iterations)? (I lean yes.)
-2. Emit a FINAL heartbeat on bounded exit, or just exit? (I lean just exit for v1.)
+1. `--max-count` counts CAPTURES only (not heartbeats/iterations): **RESOLVED →
+   YES, captures only.** A heartbeat is liveness telemetry, not work product.
+2. Final heartbeat on bounded exit: **RESOLVED → JUST EXIT for v1.** A bounded run
+   is short; the last scheduled beat is recent. Avoids an extra exit-path publish.
+   A terminal-beat is a possible later enhancement.

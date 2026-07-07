@@ -13,6 +13,26 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Added
+- Stage 3.3 (s3.3a–b): `--max-count` / `--max-runtime` clean self-exit for
+  `--continuous` (design §3.3). Lets a producer run as a bounded, scheduler-
+  friendly burst instead of a forever-daemon; pairs with the Stage 6 cron job
+  pattern. Note in docs/STAGE3.3-DESIGN-NOTE.md.
+  - `--max-count N`: exit after N CAPTURES (heartbeats/iterations don't count).
+  - `--max-runtime S`: exit after S wall-clock seconds, checked at the loop TAIL
+    on a completed-capture edge so exit never lands mid-interval and >=1 frame is
+    always delivered (a sub-interval runtime still yields the startup capture).
+  - Both default 0 = unbounded (the forever behavior is preserved exactly).
+    Whichever bound trips first ends the loop; it returns normally so the pywaggle
+    Plugin tears down cleanly. Bounded exit is a SUCCESS (exit 0).
+  - `run_dual_grid_loop` gains a `max_runtime_ns` bound and promotes `max_captures`
+    to a first-class production bound (test `max_ticks` still works — the two are
+    kept separate). +4 loop tests.
+  - CLI + validate_args: continuous-only (rejected in one-shot), non-negative ints
+    (negative -> fail-fast exit 2); `summarize()` shows `bounds=[...]`. +11 tests.
+  - Verified with a real clock/sleep: `--max-count 3` captured exactly 3 frames on
+    the 1s grid and self-exited 0 in ~2s. 229 tests pass.
+
 ## [0.4.0] - 2026-07-06
 
 Stage 6: `--one-shot --from-cache <dir>` cache uploader (design §2.8) — the
