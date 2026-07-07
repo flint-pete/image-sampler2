@@ -13,6 +13,30 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Added
+- Stage 6 (s6a–s6c): `--one-shot --from-cache <dir>` cache uploader — the
+  consumer/uploader half of the producer/consumer split (design §2.8). Takes the
+  NEWEST v2 image already in a cache dir and uploads it, WITHOUT touching the
+  camera, writing, or evicting. Note in docs/STAGE6-DESIGN-NOTE.md.
+  - `upload.cache_upload(path, plugin=None)`: reads the cached file, recovers its
+    capture-ts from the v2 name, reads back embedded EXIF for the meta block, and
+    uploads a COPY with the RECORD timestamp = the ORIGINAL capture ts (preserved
+    end to end, §2.10 — never re-stamped to now). `upload_timestamp` = real send
+    time; `source=from-cache`. The cached original is never moved/mutated/evicted.
+    Publishes `plugin.duration.upload` only (no grab/embed phases). +7 tests.
+  - `app._one_shot_from_cache`: resolves the STREAM dir, selects newest via
+    `cache.scan_ring` (same "valid v2 file" rule as the producer; ignores
+    .tmp/non-v2), maps outcomes to exit codes — fail-fast EXIT_CONFIG_ERROR on a
+    missing dir or an EMPTY cache (surfaces a broken/absent producer), runtime
+    upload failure -> EXIT_CAPTURE_ERROR. Wired into main() dispatch. +6 tests.
+  - `jobs/`: turnkey producer+uploader example pair (`producer-continuous.yaml`,
+    `uploader-from-cache.yaml`) + `jobs/README.md` documenting the composed
+    periodic-snapshot pattern. Producer reads camera creds from env/Secret (never
+    argv, per Infra #10); uploader needs no creds (never hits the camera).
+  - Verified end-to-end: producer-filled cache -> from-cache upload selects the
+    newest, preserves the original capture-ts, carries embedded unique_id, and
+    leaves the cache untouched. 214 tests pass.
+
 ## [0.3.0] - 2026-07-06
 
 Stage 5: continuous-mode cache HEARTBEAT (design §3.2) — the sole liveness signal

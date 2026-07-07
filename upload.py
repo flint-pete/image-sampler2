@@ -155,6 +155,115 @@ def _rmtree_quiet(path):
         pass
 
 
+def cache_upload(*, path, plugin=None):
+    """Upload an ALREADY-CACHED v2 image, preserving its original capture-ts (§2.8).
+
+    The cached file is a complete v2 artifact (raw camera bytes + embedded
+    EXIF/UserComment written by a --continuous producer). This function does NOT
+    capture from a camera and does NOT re-embed: it reads the file, recovers its
+    capture timestamp from the v2 name, reads back the embedded meta, and uploads a
+    COPY with the RECORD timestamp set to that ORIGINAL capture ts (never re-stamped
+    to now). The cached original is never moved, mutated, or evicted (§2.8).
+
+    Returns (ok: bool, info: dict). Never raises on a runtime read/upload failure --
+    returns ok=False with an "error" in info so the caller maps it to an exit code.
+    `plugin` may be injected (tests); otherwise a real pywaggle Plugin is created.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    info = {}
+    base = os.path.basename(path)
+
+    # Recover capture-ts (authoritative) from the v2 name. vsn/camera come from the
+    # embedded EXIF (parse_v2_name can't split hyphenated vsn/camera reliably).
+    parsed = metadata.parse_v2_name(base)
+    if parsed is None:
+        return False, {"error": f"not a v2 cache file: {base}"}
+    capture_ts_ns = parsed[0]
+
+    try:
+        with open(path, "rb") as fh:
+            jpeg_bytes = fh.read()
+    except OSError as e:
+        return False, {"error": f"cache read error: {e}"}
+
+    # Read back the embedded provenance so the upload meta faithfully reflects what
+    # the producer stamped (unique_id, camera, vsn, acquisition_path, ...). Fall
+    # back to name-parsed vsn/camera if a field is missing.
+    try:
+        fields, uid = metadata.read_back_fields(jpeg_bytes)
+    except Exception:
+        fields, uid = {}, ""
+    vsn = fields.get("vsn") or parsed[1]
+    camera = fields.get("camera") or parsed[2]
+
+    own_plugin = False
+    if plugin is None:
+        try:
+            plugin = _default_plugin()
+            own_plugin = True
+        except Exception as e:  # pragma: no cover - only off-node
+            return False, {"error": f"pywaggle Plugin unavailable: {e}"}
+
+    ctx = plugin if hasattr(plugin, "__enter__") else _nullcontext(plugin)
+    try:
+        with ctx:
+            # Upload a COPY (upload_file may move/consume the source; the cached
+            # original must remain untouched -- §2.8 "does not evict/touch").
+            tmpdir = tempfile.mkdtemp(prefix="is2-fromcache-")
+            staged = os.path.join(tmpdir, base)
+            t2 = time.time_ns()
+            upload_ts_ns = metadata.now_capture_ts_ns()
+            try:
+                shutil.copyfile(path, staged)
+                meta = {
+                    "camera": str(camera),
+                    "vsn": str(vsn),
+                    "node_id": str(fields.get("node_id", "") or ""),
+                    "job": str(fields.get("job", "") or ""),
+                    "task": str(fields.get("task", "") or ""),
+                    "plugin": str(fields.get("plugin", "") or ""),
+                    "capture_timestamp": str(capture_ts_ns),
+                    "upload_timestamp": str(upload_ts_ns),
+                    "unique_id": str(uid or fields.get("unique_id", "") or ""),
+                    "acquisition_path": str(fields.get("acquisition_path",
+                                                       "native-raw") or "native-raw"),
+                    "schema_version": metadata.SCHEMA_VERSION,
+                    "source": "from-cache",
+                }
+                # RECORD timestamp = ORIGINAL capture time (preserve end to end).
+                plugin.upload_file(staged, meta=meta, timestamp=capture_ts_ns)
+            except Exception as e:
+                return False, {"error": f"upload error: {e}", **info}
+            finally:
+                try:
+                    if os.path.exists(staged):
+                        os.unlink(staged)
+                    os.rmdir(tmpdir)
+                except OSError:
+                    pass
+            upload_ns = _duration_ns(t2)
+
+            info.update(object_name=base, unique_id=str(uid or ""),
+                        final_bytes=len(jpeg_bytes), capture_ts_ns=capture_ts_ns,
+                        upload_ts_ns=upload_ts_ns, upload_ns=upload_ns)
+            # Only the upload phase applies here (no grab/embed in a from-cache run).
+            try:
+                plugin.publish("plugin.duration.upload", upload_ns,
+                               timestamp=capture_ts_ns)
+            except Exception:
+                pass
+            return True, info
+    finally:
+        if own_plugin and hasattr(plugin, "close"):
+            try:
+                plugin.close()
+            except Exception:
+                pass
+
+
 class _nullcontext:
     """Minimal contextlib.nullcontext for a plugin that isn't a context manager."""
     def __init__(self, obj):

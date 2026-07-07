@@ -668,6 +668,40 @@ def _safe_job_name(job):
     return candidate or "imagesampler2"
 
 
+def _one_shot_from_cache(args):
+    """--one-shot --from-cache <dir>: upload the NEWEST cached v2 image (§2.8).
+
+    Reads the newest managed v2 file in the STREAM dir <from_cache>, uploads it via
+    the from-cache path (original capture-ts preserved, no camera hit, no evict).
+    Fail-FAST (exit 2) if the dir is missing/not a dir or holds ZERO valid v2
+    images. Runtime read/upload failure -> exit 3.
+    """
+    d = args.from_cache
+    if not d or not os.path.isdir(d):
+        logger.error("config error: --from-cache dir does not exist: %r", d)
+        return EXIT_CONFIG_ERROR
+
+    # Reuse the ring scan so "valid managed v2 file" is defined in ONE place
+    # (ignores .tmp / non-v2 names); newest = max capture_ts_ns.
+    ring = cache.scan_ring(d)
+    if ring.count == 0:
+        logger.error("config error: --from-cache dir has no v2 images: %s", d)
+        return EXIT_CONFIG_ERROR
+    newest = max(ring.members, key=lambda m: m.capture_ts_ns)
+    path = os.path.join(d, newest.name)
+    logger.info("STAGE 6: from-cache newest=%s (of %d cached)", newest.name,
+                ring.count)
+
+    ok, info = upload.cache_upload(path=path)
+    if not ok:
+        logger.error("STAGE 6: from-cache upload failed: %s", info.get("error"))
+        return EXIT_CAPTURE_ERROR
+    logger.info("STAGE 6: uploaded %s (capture_ts=%s upload_ns=%s)",
+                info.get("object_name"), info.get("capture_ts_ns"),
+                info.get("upload_ns"))
+    return EXIT_OK
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -688,8 +722,7 @@ def main(argv=None):
         return _one_shot_from_camera(args)
 
     if args.one_shot and args.from_cache is not None:
-        logger.info("--from-cache path not implemented yet (Stage 6).")
-        return EXIT_OK
+        return _one_shot_from_cache(args)
 
     # continuous (single stream, enforced by validate_args)
     return _continuous_to_cache(args)

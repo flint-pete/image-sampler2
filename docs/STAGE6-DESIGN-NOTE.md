@@ -129,15 +129,14 @@ cache dir is untouched.
 - s6d: on-node verification on H00F (producer -> from-cache upload -> Beehive,
   original capture-ts preserved, cache untouched); CHANGELOG; (0.4.0 when you say).
 
-## 6. Open questions for Pete
+## 6. Open questions for Pete — RESOLVED 2026-07-06
 
-1. `--from-cache <dir>` = the STREAM dir (…/<cache-name>/<camera>/) for v1, or
-   should it accept a parent and auto-descend to a single stream? (I lean
-   stream-dir: unambiguous, matches §2.12 "known cache".)
-2. Job pair (§3.4): include the `jobs/` examples in Stage 6, or split to a small
-   follow-up? (I lean include — it's what makes the composed case turnkey and
-   exercises the creds-via-Secret pattern.)
-3. Exit code for "cache empty / nothing to upload": fail-fast EXIT_CONFIG_ERROR
-   (my lean — a scheduled uploader firing against an empty cache is a real
-   misconfig worth surfacing), or treat empty as a benign no-op exit 0 (quieter
-   for a cron that races a slow producer at startup)? Trade-off worth your call.
+1. `--from-cache <dir>` = the STREAM dir (…/<cache-name>/<camera>/): **RESOLVED →
+   STREAM dir for v1.** Unambiguous (one camera per stream), matches §2.12 known
+   cache. Parent auto-descend deferred.
+2. Job pair (§3.4): **RESOLVED → INCLUDE the jobs/ producer+uploader pair in
+   Stage 6.** Makes the composed periodic-snapshot case turnkey; exercises the
+   creds-via-Secret pattern (Infra #10).
+3. Empty-cache exit code: **RESOLVED → FAIL-FAST EXIT_CONFIG_ERROR.** A scheduled
+   uploader firing against an empty cache is a real misconfig worth surfacing;
+   silently-empty would hide a broken producer.
