@@ -36,6 +36,22 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
   - Verified end-to-end: producer-filled cache -> from-cache upload selects the
     newest, preserves the original capture-ts, carries embedded unique_id, and
     leaves the cache untouched. 214 tests pass.
+- Stage 6d: ON-NODE verification on H00F (Thor), built/imported as
+  image-sampler2:0.4.0-rc. Ran the composed loop via pluginctl:
+  - PRODUCER (--continuous, live hummingcam) filled a host-mounted ring with 3
+    real ~1.3MB frames (newest capture_ts 1783384382979952981).
+  - UPLOADER (--one-shot --from-cache /cache/h00f-s6/top) selected the NEWEST,
+    uploaded it with NO camera contact, exit 0.
+  - DATA-PLANE: the `upload` record landed in Beehive with RECORD timestamp =
+    2026-07-07T00:33:02.979952981Z (the ORIGINAL capture time, NOT the ~00:34:18
+    send time), meta.source=from-cache, upload_timestamp=1783384458... (real
+    send), unique_id from the embedded EXIF; object stored at
+    storage.sagecontinuum.org under the original capture-ts name. Capture-ts
+    preserved end to end (§2.10) — confirmed live.
+  - CACHE UNTOUCHED: all 3 files identical after the upload (no evict/mutate, §2.8).
+  - Beehive attached vsn=H00F/node downstream to the in-pod placeholder vsn=NODE.
+    WES scheduler stack unharmed; node cleaned (pods removed, creds shredded,
+    scratch/build deleted).
 
 ## [0.3.0] - 2026-07-06
 
