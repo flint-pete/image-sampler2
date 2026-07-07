@@ -32,6 +32,13 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
     (negative -> fail-fast exit 2); `summarize()` shows `bounds=[...]`. +11 tests.
   - Verified with a real clock/sleep: `--max-count 3` captured exactly 3 frames on
     the 1s grid and self-exited 0 in ~2s. 229 tests pass.
+- Stage 3.3c: ON-NODE self-exit verification on H00F (Thor), built/imported as
+  image-sampler2:0.5.0-rc. `--continuous 8 --max-runtime 30` captured 5 real
+  hummingcam frames on the 8s grid (t=0,8,16,24,32s) then CLEANLY SELF-EXITED at
+  the first capture edge past the 30s bound — the pod reached a terminal completed
+  state and was reaped (not killed, not crash-looped). Producer ran as a bounded,
+  self-terminating burst on real hardware. Creds env-only (shredded); scheduler
+  unharmed; node cleaned.
 
 ## [0.4.0] - 2026-07-06
 
