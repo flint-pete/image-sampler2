@@ -13,6 +13,14 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-06
+
+Stage 5: continuous-mode cache HEARTBEAT (design §3.2) — the sole liveness signal
+for `--continuous` (local-only, so no upload record implies "alive"). Fires on its
+own monotonic grid decoupled from the capture cadence, even when captures fail
+(the "running but silent" case). Verified on-node against H00F, including the
+dead-camera liveness case and data-plane delivery of env.imagesampler.cache.*.
+
 ### Added
 - Stage 5 (s5a–s5c): continuous-mode cache HEARTBEAT — the sole liveness signal
   for `--continuous` (local-only, so no upload record implies "alive"). Design
