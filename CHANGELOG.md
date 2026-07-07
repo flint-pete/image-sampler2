@@ -13,6 +13,15 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-06
+
+Stage 3.3: `--max-count` / `--max-runtime` clean self-exit for `--continuous`
+(design §3.3). A producer can now run as a bounded, scheduler-friendly burst
+(exits cleanly on a completed-capture edge after N captures or S wall seconds)
+instead of a forever-daemon — pairs with the Stage 6 cron job pattern. Both
+default 0 = unbounded (forever behavior preserved). Verified on-node against H00F
+(pod self-completed at the edge past the runtime bound).
+
 ### Added
 - Stage 3.3 (s3.3a–b): `--max-count` / `--max-runtime` clean self-exit for
   `--continuous` (design §3.3). Lets a producer run as a bounded, scheduler-
