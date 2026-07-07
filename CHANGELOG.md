@@ -13,6 +13,23 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-06
+
+### Fixed
+- ECR build (Jenkins/buildkit) failed on every `RUN` step with
+  `runc ... can't mask dir "/proc/acpi"` — a buildkitd/runc sandbox bug triggered
+  by the `waggle/plugin-base:1.1.1-base` container config (the base also shipped
+  Python 3.8.5). Switched the base image to `python:3.12-slim` (same family the
+  birdnet plugin builds cleanly with on the ECR builder), which avoids the sandbox
+  bug and modernizes the runtime. No app code changed; 229 tests unaffected.
+- Slimmed `requirements.txt`: `pywaggle[vision]` -> `pywaggle` (we only use the
+  core `waggle.plugin.Plugin`; no cv2/OpenCV anywhere — the OpenCV fallback is a
+  stub and frames are fetched via stdlib urllib), and dropped the unused
+  `croniter` and bare `pip` entries. Removes the OpenCV/numpy dependency chain and
+  the need for apt system libs -> smaller image, faster build, fewer failure
+  surfaces. Verified on-node: image builds on python:3.12-slim and
+  `from waggle.plugin import Plugin` + `piexif` resolve; `--help` runs.
+
 ## [0.5.0] - 2026-07-06
 
 Stage 3.3: `--max-count` / `--max-runtime` clean self-exit for `--continuous`

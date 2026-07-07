@@ -33,7 +33,7 @@ name: image-sampler2-producer
 plugins:
   - name: image-sampler2-producer
     pluginSpec:
-      image: registry.sagecontinuum.org/beckman/image-sampler2:0.3.0
+      image: registry.sagecontinuum.org/beckman/image-sampler2:0.5.1
       args:
         - "--continuous"
         - "60"                       # capture every 60s onto the ring

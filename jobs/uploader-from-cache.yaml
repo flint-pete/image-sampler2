@@ -37,7 +37,7 @@ name: image-sampler2-uploader
 plugins:
   - name: image-sampler2-uploader
     pluginSpec:
-      image: registry.sagecontinuum.org/beckman/image-sampler2:0.3.0
+      image: registry.sagecontinuum.org/beckman/image-sampler2:0.5.1
       args:
         - "--one-shot"
         - "--stream"
