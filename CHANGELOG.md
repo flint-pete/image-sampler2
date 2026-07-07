@@ -13,6 +13,15 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-06
+
+Stage 6: `--one-shot --from-cache <dir>` cache uploader (design §2.8) — the
+consumer/uploader half of the producer/consumer split. Uploads the NEWEST v2 image
+already in a cache dir, preserving its original capture-ts end to end, without
+touching the camera, writing, or evicting. Completes the produce→cache→upload
+loop. Ships a turnkey producer+uploader job pair. Verified on-node against H00F
+(capture-ts preserved in Beehive, cache untouched).
+
 ### Added
 - Stage 6 (s6a–s6c): `--one-shot --from-cache <dir>` cache uploader — the
   consumer/uploader half of the producer/consumer split (design §2.8). Takes the
