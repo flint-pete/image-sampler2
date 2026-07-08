@@ -122,20 +122,11 @@ def build_parser():
         '--cache-root', dest='cache_root', metavar='DIR',
         action='store', default=None, type=str,
         help='CONTINUOUS ONLY. Base dir for the ring cache. The per-stream ring '
-             'lives at <cache-root>/<cache-name>/<camera>/. OPTIONAL: if omitted, '
-             'auto-detected as $IS2_CACHE_ROOT -> /local-cache (if present) -> '
-             '/tmp. Created if missing; must be writable.')
-    parser.add_argument(
-        '--require-local-cache', dest='require_local_cache', action='store_true',
-        default=False,
-        help='CONTINUOUS ONLY. Assert the SHARED /local-cache mount is really '
-             'present and writable before running, and FAIL FAST with a clear '
-             'explanation if it is not (e.g. the node is missing the '
-             'wes-local-cache-manager WES component, or this plugin was started '
-             'without the -v host:/local-cache volume mount). Prevents silently '
-             'writing pod-ephemeral frames to /tmp that no consumer can read. '
-             'Set this for any production producer/consumer job. Env twin: '
-             'IS2_REQUIRE_LOCAL_CACHE=1.')
+             'lives at <cache-root>/<cache-name>/<camera>/. OPTIONAL: defaults to '
+             '$IS2_CACHE_ROOT -> /local-cache (the shared node cache provided by '
+             'wes-local-cache-manager). The resolved dir MUST already exist and be '
+             'writable, else the plugin fails fast. Pass an existing directory here '
+             'for local development off-node.')
     parser.add_argument(
         '--cache-name', dest='cache_name', metavar='NAME',
         action='store', default=None, type=str,
@@ -259,12 +250,12 @@ def validate_args(args):
       - --from-cache is one-shot only                                       (2.8)
       - cache flags (--cache-root/-name/-max-*) are continuous only         (2.6)
       - --continuous REQUIRES at least one cap; root/name are OPTIONAL       (2.6)
-        (root auto-detects /local-cache-else-/tmp; name defaults to job id)
+        (root defaults to $IS2_CACHE_ROOT -> /local-cache; name -> job id)
       - --cache-name, if given, must be filesystem-safe                     (2.12)
       - caps, if set, must be positive                                      (2.6)
-    Cache-root existence/writability is NOT checked here: it is created (mkdir -p)
-    and writability-checked at run time by cache.stream_dir (root may not exist yet,
-    e.g. a fresh /tmp subtree), so that stays a runtime fail-fast in the loop.
+    Cache-root existence/writability IS enforced at startup by
+    cache.assert_cache_root_available (fail-fast; no fallback), separately from
+    this arg-shape validation.
     """
     one_shot = bool(getattr(args, 'one_shot', False))
     continuous = getattr(args, 'continuous', None)
@@ -336,8 +327,8 @@ def validate_args(args):
     if args.from_cache is not None:
         raise ConfigError("--from-cache is only valid with --one-shot")
 
-    # root and name are OPTIONAL (2.6): root auto-detects (/local-cache-else-/tmp),
-    # name defaults to the job id. Neither is required here.
+    # root and name are OPTIONAL (2.6): root defaults to $IS2_CACHE_ROOT ->
+    # /local-cache, name defaults to the job id. Neither is required here.
 
     # at least one cap, else the ring is unbounded (2.6)
     if args.cache_max_count is None and args.cache_max_mb is None:
@@ -612,33 +603,16 @@ def _continuous_to_cache(args, *, max_ticks=None, plugin=None,
         logger.warning("node GPS not resolvable at runtime; omitting EXIF GPS "
                        "(not faking coordinates).")
 
-    # Resolve cache location: root auto-detect (/local-cache-else-/tmp), name
-    # defaults to job id. stream_dir does mkdir -p + writability (fail-fast).
+    # Resolve cache location: root defaults to $IS2_CACHE_ROOT -> /local-cache
+    # (the shared node cache). Fail-FAST if it isn't a writable directory -- there
+    # is no fallback, since frames written where no consumer can read them are
+    # worse than a clean error. name defaults to the job id.
     cache_root = cache.resolve_cache_root(args.cache_root)
-    # Fail-FAST on a broken shared-cache expectation BEFORE we create any dirs:
-    # (a) --require-local-cache / IS2_REQUIRE_LOCAL_CACHE asserts the shared mount
-    #     is really there (node has the wes-local-cache-manager component + the
-    #     -v host:/local-cache mount); (b) an explicitly-named /local-cache that
-    #     isn't present is never silently downgraded to /tmp. Otherwise a producer
-    #     would write pod-ephemeral frames no consumer can read.
-    required = cache.require_local_cache_requested(
-        getattr(args, "require_local_cache", False))
     try:
-        cache.assert_shared_cache_available(cache_root, required=required)
+        cache.assert_cache_root_available(cache_root)
     except cache.CacheError as e:
         logger.error("config error: %s", e)
         return EXIT_CONFIG_ERROR
-    # Interim /tmp fallback is allowed but must NOT be silent: warn loudly so an
-    # operator who expected a shared cache is never misled (frames won't be seen
-    # by any consumer plugin).
-    if (not required
-            and os.path.abspath(cache_root) == os.path.abspath(cache.TMP_CACHE_DIR)):
-        logger.warning(
-            "using INTERIM cache root %s (pod-ephemeral, private to this pod): the "
-            "shared %s mount was not found. Frames will NOT be visible to any "
-            "consumer plugin. For a production producer/consumer setup, deploy "
-            "wes-local-cache-manager and run with --require-local-cache.",
-            cache.TMP_CACHE_DIR, cache.LOCAL_CACHE_DIR)
     cache_name = args.cache_name or _safe_job_name(args.job)
     try:
         sdir = cache.stream_dir(cache_root, cache_name, camera_name)

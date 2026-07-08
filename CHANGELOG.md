@@ -13,26 +13,24 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
-### Added
-- Fail-fast shared-cache guard for `--continuous` producers, so a job that
-  EXPECTS the shared `/local-cache` on a node that lacks the
-  `wes-local-cache-manager` WES component (or was started without the
-  `-v host:/local-cache` volume mount) fails cleanly with a full explanation
-  instead of silently writing pod-ephemeral frames to `/tmp` that no consumer
-  can read:
-  - New `--require-local-cache` flag (env twin `IS2_REQUIRE_LOCAL_CACHE=1`):
-    asserts the resolved cache root IS the shared `/local-cache` AND it exists
-    writable; otherwise exits `EXIT_CONFIG_ERROR` (2). Set this on any
-    production producer/consumer job.
-  - An explicitly-named `/local-cache` (`--cache-root /local-cache` or
-    `IS2_CACHE_ROOT=/local-cache`) that is absent/unwritable now fails fast too
-    — a named shared cache is never silently downgraded to `/tmp`.
-  - The interim `/tmp` auto-fallback still works (off-node dev / no component
-    yet) but now emits a LOUD warning that frames are pod-ephemeral and invisible
-    to consumers, so nobody is silently misled.
-  - `cache.py`: added `require_local_cache_requested()` and
-    `assert_shared_cache_available()` (pure, unit-tested). 15 new tests
-    (244 total pass).
+### Changed
+- **The `/tmp` cache fallback is removed.** Continuous mode now targets the shared
+  `/local-cache` node cache unconditionally (`--cache-root` > `$IS2_CACHE_ROOT` >
+  `/local-cache`), and **fails fast** if the resolved cache root is not an existing,
+  writable directory. Previously it silently fell back to a pod-ephemeral `/tmp`
+  when `/local-cache` was absent — which "worked" but produced frames no consumer
+  plugin could ever read. That scaffolding was useful during early development but
+  is a footgun in teaching/production, so it is gone: a missing cache is now a clean
+  error explaining that the node needs the `wes-local-cache-manager` WES component
+  and the `-v <host>:/local-cache` volume mount.
+  - `--cache-root <dir>` remains as an explicit escape hatch for off-node local
+    development (point it at any existing writable dir).
+  - Removed the interim `--require-local-cache` flag / `IS2_REQUIRE_LOCAL_CACHE`
+    env twin — the shared cache is now always required, so the opt-in is redundant.
+  - `cache.py`: `TMP_CACHE_DIR`, `require_local_cache_requested()` and
+    `assert_shared_cache_available()` removed; `resolve_cache_root()` simplified to
+    a pure default (no filesystem probe); new `assert_cache_root_available()`
+    enforces presence/writability at startup. Tests updated (233 pass).
 
 ## [0.5.1] - 2026-07-06
 

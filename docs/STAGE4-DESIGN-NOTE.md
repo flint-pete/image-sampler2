@@ -52,7 +52,15 @@ These are settled; the note records them so implementation is unambiguous.
 - **Cache location model (DECIDED 2026-07-06 with Pete):** the flag is
   **`--cache-root`** (renamed from `--cache-dir`), a BASE dir. The per-instance
   subtree is `<cache-root>/<cache-name>/<camera>/`. `--cache-name` overrides the
-  middle segment (default = job id). **Default root is auto-detected:**
+  middle segment (default = job id).
+  > **SUPERSEDED (see CHANGELOG [Unreleased]):** the `/tmp` fallback described in
+  > the rest of this bullet has been REMOVED. `--cache-root` now defaults to
+  > `$IS2_CACHE_ROOT` → `/local-cache` and the plugin **fails fast** if that dir
+  > is not present/writable — no silent `/tmp`. The `wes-local-cache-manager` WES
+  > component now provides `/local-cache`. The historical text below is kept for
+  > design-record context only.
+
+  **Default root was auto-detected:**
   `$IS2_CACHE_ROOT` → `/local-cache` (if it exists) → `/tmp`. Today that lands in
   `/tmp` (pod-local, ephemeral) which fully supports the PRODUCER + all Stage-4
   verification; the day CI ships a persistent, cross-consumer `/local-cache` mount
@@ -121,7 +129,7 @@ def capture_and_embed_to_tmp(*, url, capture_timeout, ident, job, task,
 1. Resolve identity once (nodemeta, Stage 3 placeholder-aware).           # cheap, reused per tick
 2. Build the Reolink URL once (creds from env, Stage 3).
 3. stream = args.stream[0]; camera = args.name[0] if args.name else stream
-4. root = cache.resolve_cache_root(args.cache_root)                        # /local-cache-else-/tmp default
+4. root = cache.resolve_cache_root(args.cache_root)                        # -> /local-cache (fail-fast if absent)
    cname = args.cache_name or job_id                                       # --cache-name overrides
    sdir = cache.stream_dir(root, cname, camera)                            # mkdir -p; fail-fast if unwritable
 5. Run the 2.2 monotonic-grid loop:

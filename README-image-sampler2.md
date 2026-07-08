@@ -15,11 +15,12 @@ for GPU time-sharing (S3.3). 0.5.1 also modernized the container
 (`python:3.12-slim`, slimmed deps). Full design:
 `docs/imagesampler.flint.analysis.txt`.
 
-**Not yet "usable" architecturally — see `readiness-gap.txt`.** The code is done
-and correct, but the producer/consumer loop can't function on a scheduled node
-until Sage provides a shared `/local-cache` mount (today the producer writes to
-pod-ephemeral `/tmp`, invisible to consumers); normal deployment is blocked by the
-ECR build bug; and real node identity/geotags await the pywaggle/WES runtime calls.
+The producer/consumer loop uses the shared `/local-cache` node cache provided by
+the `wes-local-cache-manager` WES component; if that mount is absent the plugin
+**fails fast** rather than writing to an ephemeral path no consumer can read.
+Remaining platform gaps: normal ECR deployment is blocked by the build bug, and
+real node identity/geotags await the pywaggle/WES runtime calls. See
+`readiness-gap.txt`.
 
 > **Platform blockers** (outside this plugin) are tracked with issue-ready
 > writeups in `~/AI-projects/Infra-problems-to-fix.md` (ECR `/proc/acpi` build

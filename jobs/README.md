@@ -56,10 +56,12 @@ sesctl ... submit -j <returned-id>
 
 ## Notes
 
-- `--cache-root` defaults to `/local-cache` (falls back to `/tmp`). A persistent,
-  cross-consumer-readable `/local-cache` mount is expected from the CI team
-  (§2.12); until then a `/tmp` cache is producer-functional but not visible to
-  other consumer pods.
+- `--cache-root` defaults to `/local-cache`, the shared node cache provided by the
+  `wes-local-cache-manager` WES component (mounted into the pod via
+  `pluginctl run -v <host>:/local-cache`). If it is not an existing, writable
+  directory the plugin **fails fast** with an explanation — there is no silent
+  fallback. For off-node local development, pass `--cache-root <dir>` pointing at an
+  existing writable directory.
 - Empty cache is a **fail-fast** (exit 2) for the uploader: if the producer isn't
   running, the uploader surfaces the misconfig instead of silently doing nothing.
 - Adjust the cron in each job's `scienceRules` to tune capture / upload cadence.

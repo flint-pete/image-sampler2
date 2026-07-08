@@ -81,82 +81,53 @@ def test_resolve_root_env(monkeypatch):
     assert cache.resolve_cache_root(None) == "/env/root"
 
 
-def test_resolve_root_local_cache_if_present(monkeypatch):
+def test_resolve_root_default_is_local_cache(monkeypatch):
     monkeypatch.delenv("IS2_CACHE_ROOT", raising=False)
-    monkeypatch.setattr(cache.os.path, "isdir",
-                        lambda p: p == cache.LOCAL_CACHE_DIR)
     assert cache.resolve_cache_root(None) == cache.LOCAL_CACHE_DIR
 
 
-def test_resolve_root_falls_back_to_tmp(monkeypatch):
+def test_resolve_root_no_probe(monkeypatch):
+    # resolve is pure: it must NOT probe the filesystem (presence is enforced
+    # later by assert_cache_root_available), so isdir=False still yields the default
     monkeypatch.delenv("IS2_CACHE_ROOT", raising=False)
     monkeypatch.setattr(cache.os.path, "isdir", lambda p: False)
-    assert cache.resolve_cache_root(None) == cache.TMP_CACHE_DIR
+    assert cache.resolve_cache_root(None) == cache.LOCAL_CACHE_DIR
 
 
 # --------------------------------------------------------------------------
-# require_local_cache_requested / assert_shared_cache_available (fail-fast)
+# assert_cache_root_available (fail-fast, no fallback)
 # --------------------------------------------------------------------------
 
-def test_require_flag_true():
-    assert cache.require_local_cache_requested(True) is True
-
-
-@pytest.mark.parametrize("val,exp", [
-    ("1", True), ("true", True), ("YES", True), ("on", True),
-    ("0", False), ("false", False), ("", False), ("nope", False)])
-def test_require_env_twin(monkeypatch, val, exp):
-    monkeypatch.setenv("IS2_REQUIRE_LOCAL_CACHE", val)
-    assert cache.require_local_cache_requested(False) is exp
-
-
-def test_require_env_absent(monkeypatch):
-    monkeypatch.delenv("IS2_REQUIRE_LOCAL_CACHE", raising=False)
-    assert cache.require_local_cache_requested(False) is False
-
-
-def test_assert_required_but_shared_missing_raises(monkeypatch):
-    # required + resolved to /local-cache but the dir is absent -> fail-fast
+def test_assert_cache_root_missing_raises(monkeypatch):
     monkeypatch.setattr(cache.os.path, "isdir", lambda p: False)
     monkeypatch.setattr(cache.os, "access", lambda p, m: False)
     with pytest.raises(cache.CacheError) as ei:
-        cache.assert_shared_cache_available(cache.LOCAL_CACHE_DIR, required=True)
+        cache.assert_cache_root_available(cache.LOCAL_CACHE_DIR)
     msg = str(ei.value)
     assert "wes-local-cache-manager" in msg
     assert cache.LOCAL_CACHE_DIR in msg
 
 
-def test_assert_required_present_ok(monkeypatch):
-    # required + /local-cache present & writable -> no raise
-    monkeypatch.setattr(cache.os.path, "isdir",
-                        lambda p: p == cache.LOCAL_CACHE_DIR)
-    monkeypatch.setattr(cache.os, "access", lambda p, m: True)
-    cache.assert_shared_cache_available(cache.LOCAL_CACHE_DIR, required=True)
-
-
-def test_assert_required_but_wrong_root_raises(monkeypatch):
-    # required but the resolved root is NOT the shared dir -> fail-fast
+def test_assert_cache_root_not_writable_raises(monkeypatch):
     monkeypatch.setattr(cache.os.path, "isdir", lambda p: True)
-    monkeypatch.setattr(cache.os, "access", lambda p, m: True)
-    with pytest.raises(cache.CacheError) as ei:
-        cache.assert_shared_cache_available("/tmp", required=True)
-    assert "REQUIRED" in str(ei.value)
-
-
-def test_assert_named_local_cache_missing_raises(monkeypatch):
-    # NOT required, but operator explicitly named /local-cache and it's absent ->
-    # never silently downgrade to /tmp
-    monkeypatch.setattr(cache.os.path, "isdir", lambda p: False)
     monkeypatch.setattr(cache.os, "access", lambda p, m: False)
     with pytest.raises(cache.CacheError):
-        cache.assert_shared_cache_available(cache.LOCAL_CACHE_DIR, required=False)
+        cache.assert_cache_root_available(cache.LOCAL_CACHE_DIR)
 
 
-def test_assert_tmp_not_required_ok(monkeypatch):
-    # NOT required and resolved to /tmp -> allowed (interim fallback), no raise
+def test_assert_cache_root_present_ok(monkeypatch):
     monkeypatch.setattr(cache.os.path, "isdir", lambda p: True)
     monkeypatch.setattr(cache.os, "access", lambda p, m: True)
-    cache.assert_shared_cache_available(cache.TMP_CACHE_DIR, required=False)
+    cache.assert_cache_root_available(cache.LOCAL_CACHE_DIR)
+
+
+def test_assert_cache_root_names_the_given_dir(monkeypatch):
+    # an explicit --cache-root that's absent is reported by name (dev escape hatch)
+    monkeypatch.setattr(cache.os.path, "isdir", lambda p: False)
+    monkeypatch.setattr(cache.os, "access", lambda p, m: False)
+    with pytest.raises(cache.CacheError) as ei:
+        cache.assert_cache_root_available("/nope/custom")
+    assert "/nope/custom" in str(ei.value)
 
 
 # --------------------------------------------------------------------------
