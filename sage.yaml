@@ -2,7 +2,7 @@ name: "image-sampler2"
 description: "Enhanced image sampler: capture-time naming, self-describing EXIF/JSON provenance, dual upload+local-cache, fleet-portable node identity."
 version: "0.5.1"
 namespace: "beckman"
-authors: "Pete Beckman <beckman@deepiron.com>"
+authors: "Pete Beckman <pete.beckman@northwestern.edu>"
 collaborators: "Waggle Team <https://wa8.gl>"
 funding:
 license: "The license agreed by Argonne National Laboratory"

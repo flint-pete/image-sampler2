@@ -18,13 +18,27 @@ plugins (YOLO/BioCLIP) read it. On a real scheduled node this DOES NOT WORK:
   - /tmp is pod-ephemeral AND pod-private: vanishes on pod exit, invisible to any
     other pod. A consumer literally cannot see the producer's output.
   - Net: we PRODUCE, but nothing can CONSUME. Architecture is inert.
-Coupled upstream: Infra #9 (job pluginSpec schema exposes NO volume/hostPath mount
-field, so a job can't even request /local-cache) and Infra #4.2 (Sage CI expected
-to provide a node-persistent, cross-consumer /local-cache mount — doesn't exist).
-CONTROL: upstream. Our code already ASSUMES /local-cache and uses it with zero
-changes the moment it's mounted. Needs a filed issue stating plainly: "any
-producer/consumer plugin is non-functional in production without a shared cache
-mount + a schema field to request it."
+FULL DESIGN (2026-07-08): ~/AI-projects/local-cache-design.md — a two-layer
+eviction model + a wes-local-cache-manager DaemonSet, modeled on the EXISTING
+/uploads architecture. Key source-verified facts that reshape this blocker:
+  - /uploads is ALREADY a shared hostPath (/media/plugin-data/uploads/<job>/
+    <plugin>/<tag>) drained by the wes-upload-agent DaemonSet. /local-cache should
+    copy this exact pattern (a sibling /media/plugin-data/local-cache tree + a
+    manager pod). The node already does this shape — it's not a new invention.
+  - The pluginSpec ALREADY has a Volume (hostPath) mount field (Infra #9 CORRECTED
+    2026-07-08); the gaps are nodeSelector-gating, an unresolved root-ownership
+    security TODO, and no docs — NOT absence of the field.
+  - NO storage quota exists today (verified): SES wires only cpu/memory/gpu
+    limits, no ephemeral-storage; and hostPath writes are NOT counted by kubelet
+    ephemeral-storage accounting anyway. So a purpose-built Layer-2 quota (the
+    manager pod) is the ONLY thing that can bound /local-cache. Only backstop
+    today is generic node disk-pressure eviction.
+Coupled upstream: Infra #9 (mount field: exists-but-gated) and Infra #4.2 (Sage CI
+must provision the node-persistent /local-cache mount + the manager pod).
+CONTROL: split. Our code already ASSUMES /local-cache and uses it with zero
+changes the moment it's mounted (§7 of the design doc). The Layer-1 cache primitive
+is ours (pywaggle2 / cache.py); the Layer-2 mount + manager pod + node provisioning
+are upstream (WES). Needs the design doc filed as issues on waggle-edge-stack.
 
 ----------------------------------------------------------------------------------
 BLOCKER 2 — Cross-user cache reads unverified (design 4.2, OPEN)
