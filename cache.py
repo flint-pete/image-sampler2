@@ -72,6 +72,89 @@ def resolve_cache_root(explicit=None):
     return TMP_CACHE_DIR
 
 
+# Explanation reused by the fail-fast path and surfaced in --help / docs, so an
+# operator who hits it understands the cause without reading the source.
+_MISSING_LOCAL_CACHE_MSG = (
+    "the shared cache mount %(dir)r is not present (or not a writable directory) "
+    "on this node.\n"
+    "  image-sampler2 was told to use the shared %(dir)s cache, but nothing is "
+    "mounted there.\n"
+    "  This means the node is MISSING the 'wes-local-cache-manager' WES component "
+    "(and its\n"
+    "  /media/plugin-data/local-cache host mount), OR this plugin was started "
+    "without the\n"
+    "  volume mount that maps the host cache dir to %(dir)s in the pod "
+    "(pluginctl run -v ...).\n"
+    "  Frames written here would be pod-EPHEMERAL and INVISIBLE to any consumer "
+    "plugin, so\n"
+    "  image-sampler2 refuses to run rather than silently produce data nobody can "
+    "read.\n"
+    "  Fix: deploy wes-local-cache-manager on the node (see the component's "
+    "DESIGN-AND-PURPOSE.md)\n"
+    "  and mount its host dir into this plugin at %(dir)s; OR drop the "
+    "shared-cache requirement\n"
+    "  (omit --require-local-cache / IS2_REQUIRE_LOCAL_CACHE) to use an interim "
+    "local dir instead."
+)
+
+
+def _truthy_env(val):
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def require_local_cache_requested(flag=False):
+    """Return True if the caller asserted the shared /local-cache is REQUIRED.
+
+    Sources (either triggers it): the --require-local-cache flag, or the env
+    twin IS2_REQUIRE_LOCAL_CACHE (1/true/yes/on). Kept separate/pure so app.py
+    and tests share one definition.
+    """
+    if flag:
+        return True
+    return _truthy_env(os.environ.get("IS2_REQUIRE_LOCAL_CACHE", ""))
+
+
+def assert_shared_cache_available(cache_root, *, required):
+    """Fail-FAST guard for the shared-cache expectation (config time).
+
+    Two independent checks:
+
+      1. If `required` is True, the resolved cache_root MUST be the shared
+         LOCAL_CACHE_DIR and it must exist as a writable directory. This is the
+         explicit "I intend to use the shared cache" contract: on a node lacking
+         the wes-local-cache-manager component (no /local-cache mount) it raises
+         CacheError with a full explanation instead of silently using /tmp.
+
+      2. Even when not `required`, if the caller RESOLVED to LOCAL_CACHE_DIR by
+         name (--cache-root /local-cache or IS2_CACHE_ROOT=/local-cache) but the
+         dir is missing/unwritable, that is an explicit ask for a path that isn't
+         there -> CacheError. (Never silently downgrade a named /local-cache to
+         /tmp.)
+
+    Pure except for os.path.isdir / os.access probes (monkeypatchable in tests).
+    Raises CacheError (the existing fail-fast type) so app.py's existing handler
+    reports it and exits EXIT_CONFIG_ERROR.
+    """
+    targets_shared = os.path.abspath(cache_root) == os.path.abspath(LOCAL_CACHE_DIR)
+    present = os.path.isdir(cache_root) and os.access(cache_root, os.W_OK | os.X_OK)
+
+    if required:
+        if not targets_shared:
+            raise CacheError(
+                "shared cache is REQUIRED (--require-local-cache / "
+                "IS2_REQUIRE_LOCAL_CACHE) but the resolved cache root is %r, not "
+                "the shared %s. Do not override --cache-root / IS2_CACHE_ROOT when "
+                "requiring the shared cache." % (cache_root, LOCAL_CACHE_DIR))
+        if not present:
+            raise CacheError(_MISSING_LOCAL_CACHE_MSG % {"dir": LOCAL_CACHE_DIR})
+        return
+
+    # Not required, but if the operator explicitly named /local-cache, honor the
+    # ask: refuse to fall through to /tmp behind their back.
+    if targets_shared and not present:
+        raise CacheError(_MISSING_LOCAL_CACHE_MSG % {"dir": LOCAL_CACHE_DIR})
+
+
 def validate_cache_name(name):
     """Return name if filesystem-safe, else raise CacheError (fail-fast, 2.6)."""
     if not name or not _CACHE_NAME_RE.match(name) or name in (".", ".."):

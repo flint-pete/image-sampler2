@@ -13,6 +13,27 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Added
+- Fail-fast shared-cache guard for `--continuous` producers, so a job that
+  EXPECTS the shared `/local-cache` on a node that lacks the
+  `wes-local-cache-manager` WES component (or was started without the
+  `-v host:/local-cache` volume mount) fails cleanly with a full explanation
+  instead of silently writing pod-ephemeral frames to `/tmp` that no consumer
+  can read:
+  - New `--require-local-cache` flag (env twin `IS2_REQUIRE_LOCAL_CACHE=1`):
+    asserts the resolved cache root IS the shared `/local-cache` AND it exists
+    writable; otherwise exits `EXIT_CONFIG_ERROR` (2). Set this on any
+    production producer/consumer job.
+  - An explicitly-named `/local-cache` (`--cache-root /local-cache` or
+    `IS2_CACHE_ROOT=/local-cache`) that is absent/unwritable now fails fast too
+    — a named shared cache is never silently downgraded to `/tmp`.
+  - The interim `/tmp` auto-fallback still works (off-node dev / no component
+    yet) but now emits a LOUD warning that frames are pod-ephemeral and invisible
+    to consumers, so nobody is silently misled.
+  - `cache.py`: added `require_local_cache_requested()` and
+    `assert_shared_cache_available()` (pure, unit-tested). 15 new tests
+    (244 total pass).
+
 ## [0.5.1] - 2026-07-06
 
 ### Fixed

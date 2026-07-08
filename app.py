@@ -126,6 +126,17 @@ def build_parser():
              'auto-detected as $IS2_CACHE_ROOT -> /local-cache (if present) -> '
              '/tmp. Created if missing; must be writable.')
     parser.add_argument(
+        '--require-local-cache', dest='require_local_cache', action='store_true',
+        default=False,
+        help='CONTINUOUS ONLY. Assert the SHARED /local-cache mount is really '
+             'present and writable before running, and FAIL FAST with a clear '
+             'explanation if it is not (e.g. the node is missing the '
+             'wes-local-cache-manager WES component, or this plugin was started '
+             'without the -v host:/local-cache volume mount). Prevents silently '
+             'writing pod-ephemeral frames to /tmp that no consumer can read. '
+             'Set this for any production producer/consumer job. Env twin: '
+             'IS2_REQUIRE_LOCAL_CACHE=1.')
+    parser.add_argument(
         '--cache-name', dest='cache_name', metavar='NAME',
         action='store', default=None, type=str,
         help='CONTINUOUS ONLY. Filesystem-safe identifier for this cache instance '
@@ -604,6 +615,30 @@ def _continuous_to_cache(args, *, max_ticks=None, plugin=None,
     # Resolve cache location: root auto-detect (/local-cache-else-/tmp), name
     # defaults to job id. stream_dir does mkdir -p + writability (fail-fast).
     cache_root = cache.resolve_cache_root(args.cache_root)
+    # Fail-FAST on a broken shared-cache expectation BEFORE we create any dirs:
+    # (a) --require-local-cache / IS2_REQUIRE_LOCAL_CACHE asserts the shared mount
+    #     is really there (node has the wes-local-cache-manager component + the
+    #     -v host:/local-cache mount); (b) an explicitly-named /local-cache that
+    #     isn't present is never silently downgraded to /tmp. Otherwise a producer
+    #     would write pod-ephemeral frames no consumer can read.
+    required = cache.require_local_cache_requested(
+        getattr(args, "require_local_cache", False))
+    try:
+        cache.assert_shared_cache_available(cache_root, required=required)
+    except cache.CacheError as e:
+        logger.error("config error: %s", e)
+        return EXIT_CONFIG_ERROR
+    # Interim /tmp fallback is allowed but must NOT be silent: warn loudly so an
+    # operator who expected a shared cache is never misled (frames won't be seen
+    # by any consumer plugin).
+    if (not required
+            and os.path.abspath(cache_root) == os.path.abspath(cache.TMP_CACHE_DIR)):
+        logger.warning(
+            "using INTERIM cache root %s (pod-ephemeral, private to this pod): the "
+            "shared %s mount was not found. Frames will NOT be visible to any "
+            "consumer plugin. For a production producer/consumer setup, deploy "
+            "wes-local-cache-manager and run with --require-local-cache.",
+            cache.TMP_CACHE_DIR, cache.LOCAL_CACHE_DIR)
     cache_name = args.cache_name or _safe_job_name(args.job)
     try:
         sdir = cache.stream_dir(cache_root, cache_name, camera_name)
