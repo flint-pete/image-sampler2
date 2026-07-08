@@ -5,17 +5,31 @@ An enhanced fork of the Sage/Waggle **imagesampler** plugin
 
 ## Status
 
-**Stages 0-3 shipped and verified end-to-end on H00F (2026-07-06).** CLI contract
-+ fail-fast validation (Stage 0), single real capture (Stage 1), capture-time v2
-naming + self-describing EXIF/JSON embed (Stage 2), and the one-shot upload path
-to Beehive with placeholder node identity (Stage 3, full Beehive round-trip
-confirmed). `--continuous` ring cache + heartbeat land in later stages. Full
-design: `docs/imagesampler.flint.analysis.txt`.
+**v0.5.1 — Stages 0-6 + 3.3 shipped and verified end-to-end on H00F.** 229 tests
+passing. Implemented: CLI contract + fail-fast validation (S0), single real
+capture (S1), capture-time v2 naming + self-describing EXIF/JSON embed (S2),
+one-shot upload to Beehive with placeholder node identity (S3, full round-trip
+confirmed), `--continuous` ring cache (S4), cache heartbeat/liveness (S5),
+`--from-cache` uploader (S6), and self-exit bounds `--max-count`/`--max-runtime`
+for GPU time-sharing (S3.3). 0.5.1 also modernized the container
+(`python:3.12-slim`, slimmed deps). Full design:
+`docs/imagesampler.flint.analysis.txt`.
 
-> **Platform blockers:** Sage infra bugs encountered building/deploying this
-> plugin (arm64/Thor build, buildkit `/proc/acpi`, side-loading path, runtime
-> GPS/VSN for node identity) are tracked with issue-ready writeups in
-> `~/AI-projects/Infra-problems-to-fix.md`.
+**Not yet "usable" architecturally — see `readiness-gap.txt`.** The code is done
+and correct, but the producer/consumer loop can't function on a scheduled node
+until Sage provides a shared `/local-cache` mount (today the producer writes to
+pod-ephemeral `/tmp`, invisible to consumers); normal deployment is blocked by the
+ECR build bug; and real node identity/geotags await the pywaggle/WES runtime calls.
+
+> **Platform blockers** (outside this plugin) are tracked with issue-ready
+> writeups in `~/AI-projects/Infra-problems-to-fix.md` (ECR `/proc/acpi` build
+> bug -> filed waggle-edge-stack#110; arm64/Thor build; side-load path; runtime
+> GPS/VSN; shared cache mount).
+>
+> **Future work INSIDE this plugin** (multi-vendor cameras, OpenCV fallback,
+> resize/quality decision, from-cache selectors, real-identity wiring, cross-user
+> cache perms) is tracked in `~/AI-projects/plugin-improvements.md` (IS-1..IS-7)
+> and summarized in `readiness-gap.txt`.
 
 ## Provenance of the baseline
 
@@ -36,8 +50,11 @@ design: `docs/imagesampler.flint.analysis.txt`.
 
 ## Next steps
 
-Use the analysis doc to write a staged modification plan, then implement.
-Nothing in the original source has been changed yet.
+See `readiness-gap.txt` for what's left to be usable and
+`~/AI-projects/plugin-improvements.md` (IS-1..IS-7) for the plugin-side backlog.
+The near-term in-our-control items are the cross-user cache permission probe
+(once a shared mount exists) and Hanwha SUNAPI camera support (once hardware is
+reachable).
 
 ## Changelog
 

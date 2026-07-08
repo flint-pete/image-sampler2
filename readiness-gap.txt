@@ -1,0 +1,87 @@
+image-sampler2 — READINESS GAPS: what's left to be usable
+==========================================================
+Snapshot: 2026-07-07, at v0.5.1 (Stage 6 + 3.3 shipped, 229 tests, verified
+on-node H00F). The CODE is essentially done and correct; "usable" in the
+ARCHITECTURAL sense (a producer whose output another plugin can actually consume,
+deployable by the normal path, with real identity) is blocked mostly UPSTREAM.
+
+Tiers: BLOCKER = stops real use · LIMITER = limits reach · POLISH = deferrable.
+"Control" = whether WE can fix it, or it's a Sage-side dependency.
+
+----------------------------------------------------------------------------------
+BLOCKER 1 — Producer with no way to consume (the /tmp vs /local-cache gap)
+----------------------------------------------------------------------------------
+The whole point is producer/consumer: one plugin fills a shared ring, other
+plugins (YOLO/BioCLIP) read it. On a real scheduled node this DOES NOT WORK:
+  - cache root resolves $IS2_CACHE_ROOT -> /local-cache -> /tmp. On a node
+    /local-cache doesn't exist, so it lands on /tmp.
+  - /tmp is pod-ephemeral AND pod-private: vanishes on pod exit, invisible to any
+    other pod. A consumer literally cannot see the producer's output.
+  - Net: we PRODUCE, but nothing can CONSUME. Architecture is inert.
+Coupled upstream: Infra #9 (job pluginSpec schema exposes NO volume/hostPath mount
+field, so a job can't even request /local-cache) and Infra #4.2 (Sage CI expected
+to provide a node-persistent, cross-consumer /local-cache mount — doesn't exist).
+CONTROL: upstream. Our code already ASSUMES /local-cache and uses it with zero
+changes the moment it's mounted. Needs a filed issue stating plainly: "any
+producer/consumer plugin is non-functional in production without a shared cache
+mount + a schema field to request it."
+
+----------------------------------------------------------------------------------
+BLOCKER 2 — Cross-user cache reads unverified (design 4.2, OPEN)
+----------------------------------------------------------------------------------
+Even WITH a shared mount, the premise requires a consumer pod running as a
+DIFFERENT user to read the producer's files. Flagged OPEN; the on-node probes were
+never done. If reads fail we likely need world-readable files + traversable dirs
+(chmod-on-write) — a small code change.
+CONTROL: ours (needs an on-node probe) — but moot until Blocker 1's mount exists
+to test against.
+
+----------------------------------------------------------------------------------
+BLOCKER 3 — ECR builds dead -> not deployable via the normal path (Infra #2)
+----------------------------------------------------------------------------------
+Filed: waggle-edge-stack#110. runc /proc/acpi masking regression breaks every RUN
+step fleet-wide. Deployable TODAY only via podman-build + pluginctl side-load (the
+private path we've used all along).
+CONTROL: upstream. Not our bug, not fixable by us.
+
+----------------------------------------------------------------------------------
+LIMITER 1 — Placeholder node identity (Infra #1)
+----------------------------------------------------------------------------------
+VSN is a placeholder ("NODE"); lat/lon omitted. Beehive attaches real vsn=H00F
+downstream so ATTRIBUTION is correct, but the plugin can't write a correct
+self-describing filename or embed a real EXIF geotag. Single swap-in point:
+nodemeta.py::_runtime_identity(), marked TODO(sage-ci).
+CONTROL: upstream (awaiting pywaggle/WES runtime GPS+VSN calls) — trivial for us
+to wire once they land. See pywaggle2-design.md §2.
+
+----------------------------------------------------------------------------------
+LIMITER 2 — Single-vendor cameras (Infra #4.3, OPEN)
+----------------------------------------------------------------------------------
+Only Reolink cmd=Snap implemented. Hanwha SUNAPI + Mobotix native-still builders
+spec'd but not built; OpenCV/RTSP fallback (acquire.py::capture_opencv_fallback)
+is a stub that raises. So today image-sampler2 can only talk to Reolink.
+CONTROL: ours for Hanwha SUNAPI (mirrors Reolink) — but needs a reachable Hanwha
+to verify the MJPEG-profile / EXIF questions. This is the image-sampler2 slice of
+the pywaggle2 acquisition ladder (pywaggle2-design.md §1).
+
+----------------------------------------------------------------------------------
+POLISH (all in our control, genuinely deferrable)
+----------------------------------------------------------------------------------
+- 4.5 resize/quality vs never-re-encode (OPEN; needs Pete's decision — currently
+  raw-only, a defensible permanent answer).
+- 5.2 --from-cache time-window selectors (--closest-before/after-timestamp;
+  newest-only works today).
+- 5.1 cache discovery/announcement (convention suffices for v1).
+
+----------------------------------------------------------------------------------
+BOTTOM LINE
+----------------------------------------------------------------------------------
+The code is done and correct (all modes built, tested, verified on real hardware).
+It is NOT yet "usable" architecturally, and the reasons are mostly UPSTREAM:
+  - producer/consumer loop can't function on a node without a shared /local-cache
+    mount (+ schema to request it) — currently a producer writing to a black hole;
+  - normal deployment is blocked by the ECR bug;
+  - real identity/geotags are blocked on the pywaggle/WES runtime calls.
+What's genuinely OURS left to finish: cross-user permission probe (once a mount
+exists), Hanwha camera support (once we have hardware), and the resize/quality
+decision. Everything else waits on Sage.
