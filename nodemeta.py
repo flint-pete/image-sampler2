@@ -6,33 +6,27 @@
 # image-sampler2 -- node identity resolution.
 #
 # ============================================================================
-# TODO(sage-ci): REPLACE THE PLACEHOLDER RUNTIME LOOKUP  <-- grep for "sage-ci"
+# Runtime identity is now LIVE via the WES wes-nodeinfo-injection change.
 # ============================================================================
-# As of 2026-07-06 there is NO supported way for a plugin to learn its own VSN
-# or GPS lat/lon at runtime. Verified four ways:
-#   1. pywaggle 0.56 has no gps/vsn/location/node API (source grep: zero hits).
-#   2. pywaggle "writing-a-plugin" docs expose only publish/subscribe/upload_file.
-#   3. A live `ses` plugin pod has only WAGGLE_PLUGIN_* + WAGGLE_SCOREBOARD env
-#      and mounts only /run/waggle/{uploads,data-config.json}. /etc/waggle/ is a
-#      node-HOST path and is NOT mounted into pods, so the node manifest is
-#      unreadable from inside a plugin container.
-#   4. The existing yolo/bioclip plugins do not self-identify at all -- they just
-#      upload_file() and let Beehive attach node identity DOWNSTREAM via routing.
+# As of 2026-07-12 a running plugin CAN learn its own VSN + GPS at runtime: the
+# WES change projects the `wes-identity` ConfigMap into every plugin pod via
+# `envFrom`, exposing five env vars (verified live on H00F, both tiers):
+#   WAGGLE_NODE_ID  WAGGLE_NODE_VSN  WAGGLE_NODE_GPS_LAT  WAGGLE_NODE_GPS_LON
+#   WAGGLE_NODE_MOBILITY
+# `_runtime_identity()` below reads them (sentinel->None normalized). This is the
+# Tier-1 static-identity source; a live-gpsd Tier-2 GPS() wrapper is complementary
+# (wraps WAGGLE_GPS_SERVER, already injected) and out of scope here.
 #
-# The Sage cyberinfrastructure team is adding runtime "GPS call" and "VSN call"
-# APIs (expected within days of 2026-07-06). WHEN THAT LANDS:
-#   - Implement `_runtime_identity()` below to call the real APIs (likely a
-#     pywaggle helper or a WES service such as wes-gps-server / a metadata svc).
-#   - Return {"vsn": <str>, "lat": <float|None>, "lon": <float|None>,
-#     "node_id": <str|None>} from whatever the CI team ships.
-#   - Delete the PLACEHOLDER path and this banner.
-# Everything downstream (the v2 filename, EXIF GPS, meta) already consumes the
-# dict this module returns, so the swap is confined to `_runtime_identity()`.
+# HISTORY: before this change there was NO supported runtime lookup -- pywaggle
+# 0.56 had no gps/vsn API, plugin pods had only WAGGLE_PLUGIN_*/WAGGLE_SCOREBOARD
+# env and no /etc/waggle mount, and plugins let Beehive attach identity DOWNSTREAM
+# via routing. That downstream attribution STILL works, so runtime identity here is
+# an enrichment (shapes the v2 filename + EXIF GPS), never a correctness requirement.
 # ============================================================================
 #
 # Resolution precedence (high -> low), applied per field:
 #   1. explicit CLI flag / caller value (operator override; also used off-node)
-#   2. runtime identity  -> PLACEHOLDER today, real GPS/VSN calls after sage-ci
+#   2. runtime identity  -> the 5 WES-injected WAGGLE_NODE_* env vars (in-pod)
 #   3. node manifest / /etc/waggle files  (works ONLY when run on the node host,
 #      e.g. dev/spikes; never inside a real pod)
 # Node identity is NOT required for a correct upload: Beehive attributes the node
@@ -81,20 +75,48 @@ def load_manifest(path=None):
 
 
 def _runtime_identity():
-    """Runtime node-identity lookup.
+    """Runtime node-identity lookup from the WES-injected env vars.
 
-    TODO(sage-ci): PLACEHOLDER. Today this returns nothing resolvable (vsn/lat/lon
-    all None) because no runtime GPS/VSN query exists (see the banner at the top of
-    this file). When the Sage CI team ships the runtime calls, implement them HERE
-    and return real values. Keep the return-dict shape identical so nothing
-    downstream changes.
+    The WES `wes-nodeinfo-injection` change (verified live on H00F 2026-07-12)
+    projects the `wes-identity` ConfigMap into every plugin pod via `envFrom`, so a
+    running plugin now learns its own identity + GPS from five env vars:
+
+        WAGGLE_NODE_ID  WAGGLE_NODE_VSN  WAGGLE_NODE_GPS_LAT
+        WAGGLE_NODE_GPS_LON  WAGGLE_NODE_MOBILITY
+
+    Sentinels are normalized -> None here so nothing downstream ever sees a
+    placeholder (contract mirrors pywaggle2 node_info_env.py):
+      - vsn:      "0" / "" / missing            -> None
+      - node_id:  "" / missing                  -> None
+      - lat/lon:  by RANGE (|lat|>90, |lon|>180, covers the 999 sentinel) or
+                  unparseable / "" / missing    -> None  (never fabricated)
 
     Returns: {"vsn": None|str, "node_id": None|str, "lat": None|float,
               "lon": None|float}
     """
-    # --- BEGIN sage-ci PLACEHOLDER (delete when runtime APIs are available) ---
-    return {"vsn": None, "node_id": None, "lat": None, "lon": None}
-    # --- END sage-ci PLACEHOLDER ---
+    e = os.environ
+
+    def _clean(v, sentinels=("",)):
+        if v is None:
+            return None
+        v = v.strip()
+        return None if v in sentinels else v
+
+    def _coord(v, limit):
+        if v is None or v.strip() == "":
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if abs(f) <= limit else None
+
+    return {
+        "vsn": _clean(e.get("WAGGLE_NODE_VSN"), sentinels=("", "0")),
+        "node_id": _clean(e.get("WAGGLE_NODE_ID")),
+        "lat": _coord(e.get("WAGGLE_NODE_GPS_LAT"), 90.0),
+        "lon": _coord(e.get("WAGGLE_NODE_GPS_LON"), 180.0),
+    }
 
 
 def _as_float(v):
