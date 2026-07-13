@@ -23,13 +23,13 @@ real node identity/geotags await the pywaggle/WES runtime calls. See
 `readiness-gap.txt`.
 
 > **Platform blockers** (outside this plugin) are tracked with issue-ready
-> writeups in `~/AI-projects/Infra-problems-to-fix.md` (ECR `/proc/acpi` build
+> writeups in `~/AI-projects/sage-design-planning/Infra-problems-to-fix.md` (ECR `/proc/acpi` build
 > bug -> filed waggle-edge-stack#110; arm64/Thor build; side-load path; runtime
 > GPS/VSN; shared cache mount).
 >
 > **Future work INSIDE this plugin** (multi-vendor cameras, OpenCV fallback,
 > resize/quality decision, from-cache selectors, real-identity wiring, cross-user
-> cache perms) is tracked in `~/AI-projects/plugin-improvements.md` (IS-1..IS-7)
+> cache perms) is tracked in `~/AI-projects/sage-design-planning/plugin-improvements.md` (IS-1..IS-7)
 > and summarized in `readiness-gap.txt`.
 
 ## Provenance of the baseline
@@ -52,7 +52,7 @@ real node identity/geotags await the pywaggle/WES runtime calls. See
 ## Next steps
 
 See `readiness-gap.txt` for what's left to be usable and
-`~/AI-projects/plugin-improvements.md` (IS-1..IS-7) for the plugin-side backlog.
+`~/AI-projects/sage-design-planning/plugin-improvements.md` (IS-1..IS-7) for the plugin-side backlog.
 The near-term in-our-control items are the cross-user cache permission probe
 (once a shared mount exists) and Hanwha SUNAPI camera support (once hardware is
 reachable).

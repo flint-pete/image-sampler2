@@ -66,7 +66,7 @@ downstream so ATTRIBUTION is correct, but the plugin can't write a correct
 self-describing filename or embed a real EXIF geotag. Single swap-in point:
 nodemeta.py::_runtime_identity(), marked TODO(sage-ci).
 CONTROL: upstream (awaiting pywaggle/WES runtime GPS+VSN calls) — trivial for us
-to wire once they land. See pywaggle2-design.md §2.
+to wire once they land. See sage-design-planning/pywaggle2-design.md §2.
 
 ----------------------------------------------------------------------------------
 LIMITER 2 — Single-vendor cameras (Infra #4.3, OPEN)
@@ -76,7 +76,7 @@ spec'd but not built; OpenCV/RTSP fallback (acquire.py::capture_opencv_fallback)
 is a stub that raises. So today image-sampler2 can only talk to Reolink.
 CONTROL: ours for Hanwha SUNAPI (mirrors Reolink) — but needs a reachable Hanwha
 to verify the MJPEG-profile / EXIF questions. This is the image-sampler2 slice of
-the pywaggle2 acquisition ladder (pywaggle2-design.md §1).
+the pywaggle2 acquisition ladder (sage-design-planning/pywaggle2-design.md §1).
 
 ----------------------------------------------------------------------------------
 POLISH (all in our control, genuinely deferrable)
