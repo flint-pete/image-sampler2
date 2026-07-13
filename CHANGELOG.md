@@ -29,9 +29,9 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
     `Model=H00F` and GPS `lat=41.7179852778, lon=-87.9827151389` (H00F's real surveyed
     location), with upload meta `vsn=H00F, node_id=00004cbb4701d16c` — every value
     sourced from the injected env. (The final Beehive object-store round-trip was
-    blocked by an unrelated chronic H00F upload-agent rsync stall — 154 agent
-    restarts — not by this change: the file was correctly produced and selected by the
-    agent; only the transfer to Beehive failed.)
+    completed on 2026-07-13 once the H00F upload-agent was fixed: the object appears
+    in the public Sage data API with `meta.vsn=H00F, node_id=00004cbb4701d16c,
+    filename=…-v2-H00F-top_camera.jpg` — full end-to-end proof to the cloud.)
 
 ### Changed
 - **The `/tmp` cache fallback is removed.** Continuous mode now targets the shared
