@@ -13,6 +13,26 @@ Group entries as Added / Changed / Fixed / Removed / Deprecated / Security.
 
 ## [Unreleased]
 
+### Added
+- **Runtime node identity from the WES-injected env vars.** `nodemeta._runtime_identity()`
+  now reads the five `WAGGLE_NODE_*` env vars that the WES `wes-nodeinfo-injection`
+  change projects into every plugin pod via `envFrom: wes-identity`
+  (`WAGGLE_NODE_{ID,VSN,GPS_LAT,GPS_LON,MOBILITY}`), with sentinel→None normalization
+  mirroring `pywaggle2 node_info_env.py` (vsn `0`/empty→None; coords by range,
+  `999`→None; never fabricated). This is the runtime identity source the earlier
+  `sage-ci` placeholder was written to await; the change is confined to
+  `_runtime_identity()` and the return-dict shape is unchanged, so `resolve_identity`,
+  the v2 filename, EXIF GPS, and upload meta consume it unchanged. Precedence is
+  still explicit CLI arg > runtime env > manifest/`/etc/waggle` (host-only fallback).
+  - **Verified live on H00F (2026-07-12):** image-sampler2 side-loaded with the 5
+    identity vars injected produced `1783…-v2-H00F-top_camera.jpg` whose EXIF carried
+    `Model=H00F` and GPS `lat=41.7179852778, lon=-87.9827151389` (H00F's real surveyed
+    location), with upload meta `vsn=H00F, node_id=00004cbb4701d16c` — every value
+    sourced from the injected env. (The final Beehive object-store round-trip was
+    blocked by an unrelated chronic H00F upload-agent rsync stall — 154 agent
+    restarts — not by this change: the file was correctly produced and selected by the
+    agent; only the transfer to Beehive failed.)
+
 ### Changed
 - **The `/tmp` cache fallback is removed.** Continuous mode now targets the shared
   `/local-cache` node cache unconditionally (`--cache-root` > `$IS2_CACHE_ROOT` >
