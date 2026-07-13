@@ -9,18 +9,22 @@ Tiers: BLOCKER = stops real use · LIMITER = limits reach · POLISH = deferrable
 "Control" = whether WE can fix it, or it's a Sage-side dependency.
 
 ----------------------------------------------------------------------------------
-BLOCKER 1 — Producer with no way to consume (the /tmp vs /local-cache gap)
+BLOCKER 1 — Producer with no way to consume (the /local-cache mount gap)
 ----------------------------------------------------------------------------------
 The whole point is producer/consumer: one plugin fills a shared ring, other
-plugins (YOLO/BioCLIP) read it. On a real scheduled node this DOES NOT WORK:
-  - cache root resolves $IS2_CACHE_ROOT -> /local-cache -> /tmp. On a node
-    /local-cache doesn't exist, so it lands on /tmp.
-  - /tmp is pod-ephemeral AND pod-private: vanishes on pod exit, invisible to any
-    other pod. A consumer literally cannot see the producer's output.
-  - Net: we PRODUCE, but nothing can CONSUME. Architecture is inert.
-FULL DESIGN (2026-07-08): ~/AI-projects/local-cache-design.md — a two-layer
-eviction model + a wes-local-cache-manager DaemonSet, modeled on the EXISTING
-/uploads architecture. Key source-verified facts that reshape this blocker:
+plugins (YOLO/BioCLIP) read it. That requires a shared, node-persistent
+/local-cache mount that does not exist on a stock node yet:
+  - cache root resolves --cache-root > $IS2_CACHE_ROOT > /local-cache (default).
+    There is NO /tmp fallback anymore: as of v0.5.1 the code FAILS FAST with a
+    clear message if the resolved cache root is not an existing, writable dir.
+    (The old silent /tmp fallback was removed — it "worked" but produced frames
+    no consumer pod could ever read, a footgun. See CHANGELOG [Unreleased].)
+  - So today, with no /local-cache mounted, image-sampler2 refuses to run in
+    continuous mode rather than producing into a black hole. The producer is
+    correct and ready; it is waiting on the mount, not on a code change.
+FULL DESIGN: the wes-local-cache-manager repo (DESIGN-AND-PURPOSE.md = two-layer
+eviction model + the WES manager DaemonSet, modeled on the EXISTING /uploads
+architecture; HANDOFF.md = the mount mechanics). Key source-verified facts:
   - /uploads is ALREADY a shared hostPath (/media/plugin-data/uploads/<job>/
     <plugin>/<tag>) drained by the wes-upload-agent DaemonSet. /local-cache should
     copy this exact pattern (a sibling /media/plugin-data/local-cache tree + a
@@ -36,7 +40,7 @@ eviction model + a wes-local-cache-manager DaemonSet, modeled on the EXISTING
 Coupled upstream: Infra #9 (mount field: exists-but-gated) and Infra #4.2 (Sage CI
 must provision the node-persistent /local-cache mount + the manager pod).
 CONTROL: split. Our code already ASSUMES /local-cache and uses it with zero
-changes the moment it's mounted (§7 of the design doc). The Layer-1 cache primitive
+changes the moment it's mounted. The Layer-1 cache primitive
 is ours (pywaggle2 / cache.py); the Layer-2 mount + manager pod + node provisioning
 are upstream (WES). Needs the design doc filed as issues on waggle-edge-stack.
 
