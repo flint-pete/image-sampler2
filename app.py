@@ -191,11 +191,11 @@ def build_parser():
         help='Hard timeout (seconds) for a single capture (default 10).')
 
     # --- node / provenance identity (design 2.9/2.11 field set) ----------------
-    # Node identity (vsn, node_id, gps) is NOT in pod env vars on the Sage
-    # platform; it lives in /etc/waggle/node-manifest-v2.json (verified on H00F).
-    # These flags OVERRIDE the manifest; when omitted, nodemeta.resolve_identity()
-    # fills them from the manifest so the plugin self-identifies on any node with
-    # no per-node config. Defaults are None here (not env lookups).
+    # Node identity (vsn, node_id, gps) is resolved at runtime by
+    # nodemeta.resolve_identity(): the WES wes-nodeinfo-injection change now projects
+    # the 5 WAGGLE_NODE_* env vars into every plugin pod, and the manifest is read as
+    # a host-only fallback (dev/spikes). These flags OVERRIDE both, so the plugin
+    # self-identifies on any node with no per-node config. Defaults are None here.
     parser.add_argument(
         '--vsn', dest='vsn', metavar='VSN',
         action='store', default=None, type=str,
@@ -413,20 +413,21 @@ def _one_shot_from_camera(args):
         return EXIT_CONFIG_ERROR
 
     # Node identity. Flags override; otherwise resolved via nodemeta (runtime
-    # lookup is a sage-ci PLACEHOLDER today -> falls back to a placeholder VSN and
-    # omits GPS). Identity is NEVER fatal: Beehive attributes the node via routing
-    # regardless; vsn only shapes the v2 filename, lat/lon only enrich EXIF GPS.
+    # lookup now reads the WES-injected WAGGLE_NODE_* env vars in-pod; falls back to
+    # a placeholder VSN + omits GPS only when truly unresolvable). Identity is NEVER
+    # fatal: Beehive attributes the node via routing regardless; vsn only shapes the
+    # v2 filename, lat/lon only enrich EXIF GPS.
     ident = nodemeta.resolve_identity(
         vsn=args.vsn, node_id=args.node_id, lat=args.lat, lon=args.lon,
         manifest_path=args.node_manifest)
     if ident["vsn_is_placeholder"]:
-        logger.warning("node VSN not resolvable at runtime (sage-ci runtime VSN "
-                       "call not yet available); using PLACEHOLDER vsn=%r. "
+        logger.warning("node VSN not resolvable at runtime (no --vsn, no injected "
+                       "WAGGLE_NODE_VSN, no manifest); using PLACEHOLDER vsn=%r. "
                        "Beehive still attributes the real node via routing.",
                        ident["vsn"])
     if ident["lat"] is None or ident["lon"] is None:
-        logger.warning("node GPS not resolvable at runtime (sage-ci runtime GPS "
-                       "call not yet available); omitting EXIF GPS (not faking "
+        logger.warning("node GPS not resolvable at runtime (no --lat/--lon, no "
+                       "injected WAGGLE_NODE_GPS_*, no manifest); omitting EXIF GPS "
                        "coordinates).")
 
     camera_name = (args.name[0] if args.name else args.stream[0])
