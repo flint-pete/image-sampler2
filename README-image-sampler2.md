@@ -5,6 +5,8 @@ An enhanced fork of the Sage/Waggle **imagesampler** plugin
 
 ## Status
 
+**v0.6.0 (2026-11-10):** node identity via upstream pywaggle 0.57.1 (`waggle.data.node_info_env`); see CHANGELOG.
+
 **v0.5.1 — Stages 0-6 + 3.3 shipped and verified end-to-end on H00F.** 229 tests
 passing. Implemented: CLI contract + fail-fast validation (S0), single real
 capture (S1), capture-time v2 naming + self-describing EXIF/JSON embed (S2),
